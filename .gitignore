@@ -1,0 +1,4 @@
+# 参考仓库（克隆自 GitHub）不纳入版本控制，但分析文档除外
+/refrence/*
+!/refrence/refrence.md
+.DS_Store
