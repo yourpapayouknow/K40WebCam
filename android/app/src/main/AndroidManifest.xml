@@ -34,6 +34,11 @@
             </intent-filter>
         </activity>
 
+        <service
+            android:name=".CamSrv"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
+
     </application>
 
 </manifest>

@@ -59,10 +59,9 @@ class MainAct : Activity() {
         }
     }
 
-    // 释放管线资源
+    // 界面销毁时不停止管线：管线由前台服务持有，需在后台持续推流
     override fun onDestroy() {
         super.onDestroy()
-        pipe?.stppipe()
         pipe = null
     }
 
@@ -90,7 +89,11 @@ class MainAct : Activity() {
 
     // 刷新状态显示与相机按钮列表
     private fun refrcams() {
-        val p = pipe ?: CamPipe(this, Cfg.PORT).also { pipe = it }
+        val p = pipe ?: CamPipe(this, Cfg.PORT).also {
+            pipe = it
+            // 交由前台服务持有，使管线在界面退到后台后继续运行
+            CamSrv.start(this, it)
+        }
 
         // 首次进入时打印完整相机诊断，便于排查副摄可访问性
         if (!autoDone) p.diagcams()

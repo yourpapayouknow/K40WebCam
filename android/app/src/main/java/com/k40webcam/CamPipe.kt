@@ -5,6 +5,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.MediaCodec
 import android.media.MediaFormat
+import android.os.Build
 import android.util.Log
 import com.pedro.common.ConnectChecker
 import com.pedro.common.VideoCodec
@@ -222,6 +223,13 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
                 listOf("读取失败: ${e.message}")
             }
             w("相机 $id: facing=$facing, 物理镜头=$phys")
+            // 传感器方向与可用旋转模式，用于修正画面朝向
+            val orient = ch.get(CameraCharacteristics.SENSOR_ORIENTATION)
+            w("相机 $id SENSOR_ORIENTATION=$orient")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val rc = ch.get(CameraCharacteristics.SCALER_AVAILABLE_ROTATE_AND_CROP_MODES)
+                w("相机 $id 可用旋转裁剪模式=${rc?.toList()}")
+            }
             try {
                 val res = cmgr.getCameraResolutions(id)
                 val has1080 = res.any { it.width == 1920 && it.height == 1080 }
