@@ -57,7 +57,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         override fun onAuthSuccess() {}
     }
 
-    // 相机状态回调
+    // 相机状态回调；异常时自动尝试恢复，避免管线静默失效
     private val camCb = object : CameraCallbacks {
         override fun onCameraChanged(facing: CameraHelper.Facing) {
             Log.i(TAG, "相机已切换: $facing")
@@ -65,6 +65,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
 
         override fun onCameraError(error: String) {
             Log.e(TAG, "相机错误: $error")
+            recovr()
         }
 
         override fun onCameraOpened() {
@@ -73,6 +74,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
 
         override fun onCameraDisconnected() {
             Log.w(TAG, "相机已断开")
+            recovr()
         }
     }
 
@@ -91,7 +93,15 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     @Volatile
     private var srvUp = false
 
+    // 是否正在执行相机恢复，防止错误回调递归触发
+    @Volatile
+    private var recovering = false
+
     private var camId = "0"
+
+    // 当前码率，供运行时调整
+    @Volatile
+    private var brea = Cfg.BRATE
 
     // 启动管线：编码器 → GL 桥接 → 相机；RTSP 服务待参数集就绪后自动开启
     fun strtpipe(id: String): Boolean {
@@ -163,6 +173,50 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         venc.requestKeyframe()
         Log.i(TAG, "已切换到相机 $id，旋转=$rot°")
     }
+
+    // 相机异常后自动重开，最多重试 3 次；重试期间由 recovering 标志阻断递归
+    private fun recovr() {
+        if (!running || recovering) return
+        recovering = true
+        Thread {
+            var ok = false
+            for (i in 1..3) {
+                try {
+                    Thread.sleep(1000L * i)
+                    if (!running) break
+                    val id = camId
+                    Log.i(TAG, "尝试恢复相机 $id（第 $i 次）")
+                    cmgr.closeCamera(false)
+                    cmgr.prepareCamera(gl.surfaceTexture, Cfg.W, Cfg.H, Cfg.FPS)
+                    cmgr.setCameraId(id)
+                    cmgr.openCameraId(id)
+                    venc.requestKeyframe()
+                    ok = true
+                    break
+                } catch (e: Exception) {
+                    Log.w(TAG, "恢复第 $i 次失败: ${e.message}")
+                }
+            }
+            recovering = false
+            Log.i(TAG, if (ok) "相机已恢复" else "相机恢复失败，管线保持待机")
+        }.start()
+    }
+
+    // 运行时调整码率（对流的有限调节之一），立即生效无需重启管线
+    fun setbrate(mbps: Int) {
+        if (!running) return
+        val bps = mbps * 1_000_000
+        try {
+            venc.setVideoBitrateOnFly(bps)
+            brea = bps
+            Log.i(TAG, "码率已调整为 $mbps Mbps")
+        } catch (e: Exception) {
+            Log.e(TAG, "码率调整失败: ${e.message}")
+        }
+    }
+
+    // 当前码率（Mbps）
+    fun curbrate(): Int = brea / 1_000_000
 
     // 停止管线并释放全部资源
     fun stppipe() {

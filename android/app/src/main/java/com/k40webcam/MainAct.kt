@@ -84,6 +84,27 @@ class MainAct : Activity() {
         }
         root.addView(camBox)
 
+        // 码率调节：对流的有限调节，运行时生效
+        root.addView(TextView(this).apply {
+            text = "码率"
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, 32, 0, 8)
+        })
+        val brRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        for (mbps in intArrayOf(8, 15, 25, 40)) {
+            brRow.addView(Button(this).apply {
+                text = "$mbps M"
+                setOnClickListener {
+                    pipe?.setbrate(mbps)
+                    refrcams()
+                }
+            })
+        }
+        root.addView(brRow)
+
         return ScrollView(this).apply { addView(root) }
     }
 
@@ -101,9 +122,9 @@ class MainAct : Activity() {
         status.text = buildString {
             append("地址: rtsp://").append(getip()).append(':').append(Cfg.PORT).append('\n')
             append("分辨率: ").append(Cfg.W).append('x').append(Cfg.H)
-            append(" @ ").append(Cfg.FPS).append("fps  ")
-            append(Cfg.BRATE / 1_000_000).append("Mbps H.265\n")
+            append(" @ ").append(Cfg.FPS).append("fps\n")
             append("当前: ").append(if (p.isrun()) "运行中 · 相机 ${p.curcam()}" else "已停止")
+            append(" · ").append(p.curbrate()).append(" Mbps H.265")
         }
 
         camBox.removeAllViews()
