@@ -320,26 +320,18 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         }
     }
 
-    // 枚举设备上全部相机，返回 (ID, 显示名)
+    // 枚举厂商公开的相机，返回 (ID, 显示名)
     //
-    // 注意：MIUI 会把副摄从 cameraIdList 中隐藏，仅暴露逻辑主摄与前置。
-    // 但这些 ID 仍可被 getCameraCharacteristics 访问，故此处直接探测 0..8 号 ID，
-    // 把可访问的全部列出。
+    // 只列出 cameraIdList 中的相机：实测被 MIUI 隐藏的副摄（ID 2..7）虽能读到参数，
+    // 但 HAL 拒绝供流（Buffer/Metadata error 后断开），列出来只会造成误点，故不展示。
     fun lstcams(): List<Pair<String, String>> {
         val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val out = mutableListOf<Pair<String, String>>()
-        val listed = mgr.cameraIdList.toSet()
-
-        for (i in 0..8) {
-            val id = i.toString()
+        for (id in mgr.cameraIdList) {
             try {
                 val ch = mgr.getCameraCharacteristics(id)
-                val face = when (ch.get(CameraCharacteristics.LENS_FACING)) {
-                    CameraCharacteristics.LENS_FACING_FRONT -> "前置"
-                    CameraCharacteristics.LENS_FACING_BACK -> "后置"
-                    CameraCharacteristics.LENS_FACING_EXTERNAL -> "外接"
-                    else -> "未知"
-                }
+                val facing = ch.get(CameraCharacteristics.LENS_FACING) ?: -1
+                val model = modname(facing)
                 val res = try {
                     cmgr.getCameraResolutions(id)
                 } catch (_: Exception) {
@@ -347,18 +339,38 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
                 }
                 val maxRes = res.maxByOrNull { it.width * it.height }
                 val maxTxt = maxRes?.let { "${it.width}x${it.height}" } ?: "?"
-                val tag = if (id in listed) "逻辑" else "副摄"
                 // 用 | 分隔主标题与次级信息，便于界面分两行排版
-                out.add(id to "相机 $id · $face · $tag|最高 $maxTxt · 旋转 ${rotdeg(id)}°")
+                out.add(id to "CAM$id · $model|最高 $maxTxt · 旋转 ${rotdeg(id)}°")
             } catch (_: Exception) {
                 // 该 ID 不可访问，跳过
             }
         }
-
-        if (out.isEmpty()) {
-            for (id in listed) out.add(id to "相机 $id")
-        }
         return out
+    }
+
+    // 取传感器型号：从厂商属性中按镜头朝向匹配对应条目
+    private fun modname(facing: Int): String {
+        val key = if (facing == CameraCharacteristics.LENS_FACING_FRONT) "front_main" else "back_main"
+        val raw = sysprop("persist.vendor.camera.mi.module.info") + ";" +
+                sysprop("persist.vendor.camera.mi.module.infoext")
+        for (seg in raw.split(";")) {
+            val kv = seg.split("=")
+            if (kv.size == 2 && kv[0].trim() == key) {
+                return kv[1].trim().removeSuffix("_i").uppercase()
+            }
+        }
+        return if (facing == CameraCharacteristics.LENS_FACING_FRONT) "FRONT" else "BACK"
+    }
+
+    // 读取系统属性（属隐藏 API，经反射调用）
+    private fun sysprop(k: String): String {
+        return try {
+            val c = Class.forName("android.os.SystemProperties")
+            val m = c.getMethod("get", String::class.java)
+            (m.invoke(null, k) as? String) ?: ""
+        } catch (e: Exception) {
+            ""
+        }
     }
 
     // 查询指定相机是否支持目标分辨率（切换前校验，避免会话创建失败）

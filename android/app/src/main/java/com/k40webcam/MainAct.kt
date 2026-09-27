@@ -218,7 +218,7 @@ class MainAct : Activity() {
         statusTx.text = buildString {
             append("rtsp://").append(getip()).append(':').append(Cfg.PORT).append('\n')
             append(if (p.isrun()) "推流中" else "已停止")
-            append(" · 相机 ").append(p.curcam())
+            append(" · CAM").append(p.curcam())
             append(" · ").append(c[0]).append('x').append(c[1]).append('@').append(c[2])
             append(" · ").append(c[3]).append("Mbps · ").append(if (c[5] == 0) "H.265" else "H.264")
         }
@@ -389,7 +389,7 @@ class MainAct : Activity() {
                 setTextColor(cTx)
             })
             card.addView(TextView(this).apply {
-                text = "相机 ${ps.camId} · ${ps.summ()}"
+                text = "CAM${ps.camId} · ${ps.summ()}"
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
                 setTextColor(cTx3)
             })
@@ -412,7 +412,7 @@ class MainAct : Activity() {
     // 把当前设定存为预设，名称取参数摘要
     private fun savepst(p: CamPipe) {
         val c = p.cfgnow()
-        val name = "相机${p.curcam()} ${c[0]}x${c[1]} ${c[3]}M ${if (c[5] == 0) "H265" else "H264"}"
+        val name = "CAM${p.curcam()} ${c[0]}x${c[1]} ${c[3]}M ${if (c[5] == 0) "H265" else "H264"}"
         PstStore.put(this, Preset(name, p.curcam(), c[0], c[1], c[2], c[3], c[4], c[5]))
         refr()
     }
