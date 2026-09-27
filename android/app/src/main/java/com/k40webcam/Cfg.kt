@@ -22,7 +22,7 @@ object Cfg {
     const val PORT = 8554
 
     // 启动时默认使用的相机 ID
-    const val DEFCAM = "0"
+    const val DEFCAM = "1"
 
     // 画面旋转角覆盖：-1 = 按传感器方向自动推算；0/90/180/270 = 强制指定
     // 本机 HAL 不支持旋转，故由发送端经 GL 校正，此项即该校正角的可调入口
