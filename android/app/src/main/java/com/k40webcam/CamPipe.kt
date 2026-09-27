@@ -243,11 +243,12 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     fun curbrate(): Int = vbrate / 1_000_000
 
     // 绑定界面预览输出：相机画面经 GL 额外渲染一份到此 Surface，
-    // 不经编码、不占网络，为最低开销的监看方式
-    fun attachpvw(surface: Surface) {
+    // 不经编码、不占网络，为最低开销的监看方式。
+    // 预览分辨率必须等于 Surface 实际尺寸，否则 GL 视口与实际缓冲不一致，
+    // 画面会被裁剪放大（只看到局部）。
+    fun attachpvw(surface: Surface, sw: Int, sh: Int) {
         try {
-            val (pw, ph) = cursize()
-            gl.setPreviewResolution(pw, ph)
+            if (sw > 0 && sh > 0) gl.setPreviewResolution(sw, sh)
             gl.attachPreview(surface)
             Log.i(TAG, "预览已绑定")
         } catch (e: Exception) {

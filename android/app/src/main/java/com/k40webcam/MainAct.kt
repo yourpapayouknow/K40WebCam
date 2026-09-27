@@ -50,7 +50,7 @@ class MainAct : Activity() {
     private var autoDone = false
     private var tab = TAB_PAR
 
-    private lateinit var pvwBox: FrameLayout
+    private lateinit var pvwBox: ArBox
     private lateinit var pvw: SurfaceView
     private lateinit var statusTx: TextView
     private lateinit var content: LinearLayout
@@ -123,7 +123,12 @@ class MainAct : Activity() {
         }
 
         // 监看预览：不经编码、不占网络，为最低开销的监看方式
-        pvwBox = FrameLayout(this).apply { setBackgroundColor(cBg) }
+        // 预览区：由容器 ArBox 锁定视频比例（做法同 media3 的 AspectRatioFrameLayout），
+        // SurfaceView 再填满容器，使其 Surface 比例与视频一致，不会被拉伸
+        pvwBox = ArBox(this).apply {
+            setBackgroundColor(cBg)
+            maxH = (resources.displayMetrics.heightPixels * 0.4).toInt()
+        }
         pvw = SurfaceView(this)
         pvwBox.addView(
             pvw,
@@ -133,11 +138,12 @@ class MainAct : Activity() {
         )
         root.addView(
             pvwBox,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(200))
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT)
         )
         pvw.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(h: SurfaceHolder) = bindpvw(h)
-            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) = bindpvw(h)
+            override fun surfaceCreated(h: SurfaceHolder) = bindpvw(h, pvw.width, pvw.height)
+            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) = bindpvw(h, w, ht)
             override fun surfaceDestroyed(h: SurfaceHolder) {
                 pipe?.detachpvw()
             }
@@ -183,44 +189,18 @@ class MainAct : Activity() {
         return root
     }
 
-    // 绑定预览输出到 GL
-    private fun bindpvw(h: SurfaceHolder) {
-        pipe?.let { if (it.glready()) it.attachpvw(h.surface) }
+    // 绑定预览输出到 GL，并告知 Surface 的实际尺寸
+    private fun bindpvw(h: SurfaceHolder, w: Int, ht: Int) {
+        pipe?.let { if (it.glready()) it.attachpvw(h.surface, w, ht) }
     }
 
-    // 计算并应用预览尺寸：按有效画面比例等比装入可用区域，绝不溢出屏幕。
-    // 旋转 90/270 时画面内容转置，故比例随之互换 —— 这样 16:9 / 4:3 的横向来源
-    // 与 9:16 / 3:4 的纵向来源都能正确装入，且 SurfaceView 居中不留偏移。
-    private fun fitpvw(w: Int, h: Int, rot: Int) {
+    // 设置预览宽高比。
+    // 比例取自**实际流的解析度**（参考实现的做法），未就绪时兜底 16:9；
+    // 不因旋转互换 —— 旋转只改变画面内容朝向，不改变流的分辨率比例。
+    private fun fitpvw(w: Int, h: Int) {
         if (w <= 0 || h <= 0) return
-        val swap = rot == 90 || rot == 270
-        val aw = if (swap) h else w
-        val ah = if (swap) w else h
-        pvwBox.post {
-            val dm = resources.displayMetrics
-            val maxW = dm.widthPixels
-            // 上限取屏高的 40%，保证下方状态条与分页始终可见
-            val maxH = (dm.heightPixels * 0.4).toInt().coerceAtLeast(dp(140))
-            val ratio = aw.toDouble() / ah.toDouble()
-
-            val fw: Int
-            val fh: Int
-            if (maxW / ratio <= maxH) {
-                // 受宽度约束
-                fw = maxW
-                fh = (maxW / ratio).toInt()
-            } else {
-                // 受高度约束
-                fh = maxH
-                fw = (maxH * ratio).toInt()
-            }
-
-            pvwBox.layoutParams = pvwBox.layoutParams.apply { height = fh }
-            pvw.layoutParams = FrameLayout.LayoutParams(fw, fh).apply {
-                gravity = Gravity.CENTER
-            }
-            pvwBox.requestLayout()
-        }
+        pvwBox.ar = w.toFloat() / h.toFloat()
+        pvwBox.maxH = (resources.displayMetrics.heightPixels * 0.4).toInt()
     }
 
     // 切换分页，带 180ms 淡入（DESIGN.md 7.5：允许简单过渡）
@@ -259,7 +239,7 @@ class MainAct : Activity() {
         }
 
         // 预览尺寸：按有效画面比例等比装入可用区域
-        fitpvw(c[0], c[1], c[4])
+        fitpvw(c[0], c[1])
 
         // 分页标签样式
         for ((i, t) in tabBtns.withIndex()) {
@@ -276,7 +256,7 @@ class MainAct : Activity() {
         // 管线可能在重启后使预览失效，重新绑定
         if (p.isrun() && p.glready()) {
             try {
-                p.attachpvw(pvw.holder.surface)
+                p.attachpvw(pvw.holder.surface, pvw.width, pvw.height)
             } catch (_: Exception) {
             }
         }
