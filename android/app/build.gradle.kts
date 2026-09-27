@@ -37,4 +37,6 @@ dependencies {
     implementation("com.github.pedroSG94.RootEncoder:library:2.8.1")
     // RTSP 服务端：仅用其 RtspServer，与采集/编码层解耦
     implementation("com.github.pedroSG94:RTSP-Server:1.4.3")
+    // 官方监看比例控件 AspectRatioFrameLayout（不自写比例逻辑）
+    implementation("androidx.media3:media3-ui:1.11.0")
 }

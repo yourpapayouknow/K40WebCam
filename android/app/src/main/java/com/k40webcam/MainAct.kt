@@ -21,6 +21,7 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
+import androidx.media3.ui.AspectRatioFrameLayout
 import java.net.NetworkInterface
 
 /**
@@ -50,7 +51,7 @@ class MainAct : Activity() {
     private var autoDone = false
     private var tab = TAB_PAR
 
-    private lateinit var pvwBox: ArBox
+    private lateinit var pvwBox: AspectRatioFrameLayout
     private lateinit var pvw: SurfaceView
     private lateinit var statusTx: TextView
     private lateinit var content: LinearLayout
@@ -123,11 +124,12 @@ class MainAct : Activity() {
         }
 
         // 监看预览：不经编码、不占网络，为最低开销的监看方式
-        // 预览区：由容器 ArBox 锁定视频比例（做法同 media3 的 AspectRatioFrameLayout），
-        // SurfaceView 再填满容器，使其 Surface 比例与视频一致，不会被拉伸
-        pvwBox = ArBox(this).apply {
+        // 预览区：直接使用 androidx.media3 的官方控件 AspectRatioFrameLayout
+        // 锁定视频比例，不自写比例逻辑；SurfaceView 填满它，
+        // 使其 Surface 比例与视频一致，从而不会被拉伸
+        pvwBox = AspectRatioFrameLayout(this).apply {
             setBackgroundColor(cBg)
-            maxH = (resources.displayMetrics.heightPixels * 0.4).toInt()
+            setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
         }
         pvw = SurfaceView(this)
         pvwBox.addView(
@@ -194,13 +196,11 @@ class MainAct : Activity() {
         pipe?.let { if (it.glready()) it.attachpvw(h.surface, w, ht) }
     }
 
-    // 设置预览宽高比。
-    // 比例取自**实际流的解析度**（参考实现的做法），未就绪时兜底 16:9；
-    // 不因旋转互换 —— 旋转只改变画面内容朝向，不改变流的分辨率比例。
+    // 设置预览宽高比：直接交给官方控件 AspectRatioFrameLayout 处理。
+    // 比例取自实际流解析度；不因旋转互换（旋转只改内容朝向，不改流的分辨率比例）。
     private fun fitpvw(w: Int, h: Int) {
         if (w <= 0 || h <= 0) return
-        pvwBox.ar = w.toFloat() / h.toFloat()
-        pvwBox.maxH = (resources.displayMetrics.heightPixels * 0.4).toInt()
+        pvwBox.setAspectRatio(w.toFloat() / h.toFloat())
     }
 
     // 切换分页，带 180ms 淡入（DESIGN.md 7.5：允许简单过渡）
