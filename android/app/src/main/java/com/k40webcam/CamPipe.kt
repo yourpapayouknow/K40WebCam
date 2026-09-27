@@ -159,20 +159,115 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     fun issrvup(): Boolean = srvUp
 
     // 枚举设备上全部相机，返回 (ID, 显示名)
+    //
+    // 注意：MIUI 会把副摄（超广角/微距）从 cameraIdList 中隐藏，仅暴露逻辑主摄与前置。
+    // 但这些 ID 仍可被 getCameraCharacteristics/openCamera 访问，故此处直接探测
+    // 0..8 号 ID，把可访问的全部列出，以达成「自由调用所有摄像头」。
     fun lstcams(): List<Pair<String, String>> {
         val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val out = mutableListOf<Pair<String, String>>()
-        for (id in mgr.cameraIdList) {
-            val ch = mgr.getCameraCharacteristics(id)
-            val label = when (ch.get(CameraCharacteristics.LENS_FACING)) {
-                CameraCharacteristics.LENS_FACING_FRONT -> "前置"
-                CameraCharacteristics.LENS_FACING_BACK -> "后置"
-                CameraCharacteristics.LENS_FACING_EXTERNAL -> "外接"
-                else -> "未知"
+        val listed = mgr.cameraIdList.toSet()
+
+        for (i in 0..8) {
+            val id = i.toString()
+            try {
+                val ch = mgr.getCameraCharacteristics(id)
+                val face = when (ch.get(CameraCharacteristics.LENS_FACING)) {
+                    CameraCharacteristics.LENS_FACING_FRONT -> "前置"
+                    CameraCharacteristics.LENS_FACING_BACK -> "后置"
+                    CameraCharacteristics.LENS_FACING_EXTERNAL -> "外接"
+                    else -> "未知"
+                }
+                // 用最高分辨率与支持数辅助区分副摄
+                val res = try {
+                    cmgr.getCameraResolutions(id)
+                } catch (_: Exception) {
+                    emptyArray()
+                }
+                val maxRes = res.maxByOrNull { it.width * it.height }
+                val maxTxt = maxRes?.let { "${it.width}x${it.height}" } ?: "?"
+                // 逻辑相机（公开列出）与隐藏副摄分别标注
+                val tag = if (id in listed) "逻辑" else "副摄"
+                out.add(id to "相机 $id · $face · $tag · 最高$maxTxt")
+            } catch (_: Exception) {
+                // 该 ID 不可访问，跳过
             }
-            out.add(id to "相机 $id · $label")
+        }
+
+        // 若探测范围内一个都没找到，退回官方列表，避免界面空白
+        if (out.isEmpty()) {
+            for (id in listed) out.add(id to "相机 $id")
         }
         return out
+    }
+
+    // 诊断：记录公开相机列表、各相机的物理镜头 ID 与支持的分辨率
+    // 同时写入文件，避免被系统日志刷屏冲掉
+    fun diagcams() {
+        val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val sb = StringBuilder()
+        fun w(s: String) {
+            Log.i(TAG, s)
+            sb.append(s).append('\n')
+        }
+
+        w("=== 相机诊断开始 ===")
+        w("公开 cameraIdList = ${mgr.cameraIdList.toList()}")
+        for (id in mgr.cameraIdList) {
+            val ch = mgr.getCameraCharacteristics(id)
+            val facing = ch.get(CameraCharacteristics.LENS_FACING)
+            val phys = try {
+                ch.physicalCameraIds.toList()
+            } catch (e: Exception) {
+                listOf("读取失败: ${e.message}")
+            }
+            w("相机 $id: facing=$facing, 物理镜头=$phys")
+            try {
+                val res = cmgr.getCameraResolutions(id)
+                val has1080 = res.any { it.width == 1920 && it.height == 1080 }
+                val has4k = res.any { it.width == 3840 && it.height == 2160 }
+                w("相机 $id 分辨率数=${res.size}, 支持1080p=$has1080, 支持4K=$has4k")
+                w("相机 $id 前10个分辨率=${res.take(10).joinToString()}")
+            } catch (e: Exception) {
+                w("相机 $id 分辨率查询失败: ${e.message}")
+            }
+            try {
+                val fpsList = cmgr.getSupportedFps(null, CameraHelper.Facing.BACK)
+                w("相机 $id 可用帧率范围=$fpsList")
+            } catch (e: Exception) {
+                w("相机 $id 帧率查询失败: ${e.message}")
+            }
+        }
+        try {
+            w("getPhysicalCamerasAvailable() = ${cmgr.getPhysicalCamerasAvailable()}")
+        } catch (e: Exception) {
+            w("getPhysicalCamerasAvailable 失败: ${e.message}")
+        }
+
+        // 决定性测试：逐个探测 0-7 号 ID，确认副摄是否可被第三方打开
+        w("--- 逐 ID 探测（验证副摄能否绕过 cameraIdList 访问）---")
+        for (i in 0..7) {
+            val sid = i.toString()
+            try {
+                val ch = mgr.getCameraCharacteristics(sid)
+                val facing = ch.get(CameraCharacteristics.LENS_FACING)
+                val res = cmgr.getCameraResolutions(sid)
+                w("ID $sid: 可访问 ✅ facing=$facing 分辨率数=${res.size}")
+            } catch (e: Exception) {
+                w("ID $sid: 不可访问 ❌ ${e.javaClass.simpleName}: ${e.message}")
+            }
+        }
+
+        w("=== 相机诊断结束 ===")
+
+        // 落盘，供 adb 拉取
+        try {
+            val f = java.io.File(ctx.getExternalFilesDir(null), "camdiag.txt")
+            f.writeText(sb.toString())
+            Log.i(TAG, "诊断已写入: ${f.absolutePath}")
+        } catch (e: Exception) {
+            Log.w(TAG, "诊断写文件失败: ${e.message}")
+        }
     }
 
     // 查询指定相机是否支持目标分辨率（切换前校验，避免会话创建失败）

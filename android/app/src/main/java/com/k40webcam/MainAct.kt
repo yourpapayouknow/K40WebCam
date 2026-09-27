@@ -92,6 +92,9 @@ class MainAct : Activity() {
     private fun refrcams() {
         val p = pipe ?: CamPipe(this, Cfg.PORT).also { pipe = it }
 
+        // 首次进入时打印完整相机诊断，便于排查副摄可访问性
+        if (!autoDone) p.diagcams()
+
         status.text = buildString {
             append("地址: rtsp://").append(getip()).append(':').append(Cfg.PORT).append('\n')
             append("分辨率: ").append(Cfg.W).append('x').append(Cfg.H)
@@ -112,11 +115,13 @@ class MainAct : Activity() {
             camBox.addView(btn)
         }
 
-        // 首次进入时以第一个可用相机自动开始推流，使本应用可作为常驻服务直接工作
+        // 首次进入时自动开始推流，使本应用可作为常驻服务直接工作
         if (!autoDone) {
             autoDone = true
             if (!p.isrun()) {
-                p.lstcams().firstOrNull { p.supres(it.first) }?.let { oncam(it.first) }
+                val target = if (p.supres(Cfg.DEFCAM)) Cfg.DEFCAM
+                else p.lstcams().firstOrNull { p.supres(it.first) }?.first
+                target?.let { oncam(it) }
             }
         }
     }

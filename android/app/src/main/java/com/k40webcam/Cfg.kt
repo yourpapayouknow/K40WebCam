@@ -20,4 +20,7 @@ object Cfg {
 
     // RTSP 服务端口（554 需 root 绑定，故用 8554）
     const val PORT = 8554
+
+    // 启动时默认使用的相机 ID
+    const val DEFCAM = "0"
 }
