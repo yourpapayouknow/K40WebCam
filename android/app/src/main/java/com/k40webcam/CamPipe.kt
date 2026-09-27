@@ -7,6 +7,7 @@ import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Build
 import android.util.Log
+import android.view.Surface
 import com.pedro.common.ConnectChecker
 import com.pedro.common.VideoCodec
 import com.pedro.encoder.input.video.Camera2ApiManager
@@ -99,9 +100,30 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
 
     private var camId = "0"
 
-    // 当前码率，供运行时调整
+    // 运行时配置：分辨率/帧率/码率/旋转角均可独立调节，初值取自 Cfg
     @Volatile
-    private var brea = Cfg.BRATE
+    private var vw = Cfg.W
+
+    @Volatile
+    private var vh = Cfg.H
+
+    @Volatile
+    private var vfps = Cfg.FPS
+
+    @Volatile
+    private var vbrate = Cfg.BRATE
+
+    @Volatile
+    private var vrot = Cfg.ROT
+
+    // 编码类型：H.265 或 H.264，可运行时切换（需重建编码器）
+    @Volatile
+    private var vcodec = VideoCodec.H265
+
+    // 当前生效的配置快照 [w, h, fps, mbps, rot, codecIndex]
+    // codecIndex: 0=H.265, 1=H.264
+    fun cfgnow(): IntArray =
+        intArrayOf(vw, vh, vfps, vbrate / 1_000_000, rotdeg(camId), if (vcodec == VideoCodec.H265) 0 else 1)
 
     // 启动管线：编码器 → GL 桥接 → 相机；RTSP 服务待参数集就绪后自动开启
     fun strtpipe(id: String): Boolean {
@@ -109,9 +131,9 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         camId = id
         srvUp = false
 
-        venc.type = VideoCodec.H265
+        venc.type = vcodec
         val ok = venc.prepareVideoEncoder(
-            Cfg.W, Cfg.H, Cfg.FPS, Cfg.BRATE, 0, Cfg.IFRM, FormatVideoEncoder.SURFACE
+            vw, vh, vfps, vbrate, 0, Cfg.IFRM, FormatVideoEncoder.SURFACE
         )
         if (!ok) {
             Log.e(TAG, "编码器初始化失败，设备可能不支持 H.265")
@@ -122,7 +144,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         // GL 桥接：设定输出尺寸后启动。
         // 注意：GlStreamInterface 的 SurfaceTexture 在 start() 的异步任务中创建，
         // 必须等 isRunning 为真后再取用，否则拿到 null。此方法应在后台线程调用。
-        gl.setEncoderSize(Cfg.W, Cfg.H)
+        gl.setEncoderSize(vw, vh)
         gl.start()
         var waited = 0
         while (!gl.isRunning && waited < 3000) {
@@ -144,14 +166,14 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         gl.setRotation(rotdeg(id))
 
         // 此处不启动 RTSP：须等编码器输出 CSD，见 onVideoInfo
-        rtsp.setVideoCodec(VideoCodec.H265)
+        rtsp.setVideoCodec(vcodec)
         // 本管线仅视频，须显式关闭音频，否则 SDP 会广播一条永不供数的音轨，
         // 导致拉流端（如 ffmpeg）阻塞等待音频而收不到画面
         rtsp.setOnlyVideo(true)
 
         cmgr.setCameraCallbacks(camCb)
         // 相机输出到 GL 的 SurfaceTexture，由 GL 完成旋转后送编码器
-        cmgr.prepareCamera(gl.surfaceTexture, Cfg.W, Cfg.H, Cfg.FPS)
+        cmgr.prepareCamera(gl.surfaceTexture, vw, vh, vfps)
         cmgr.openCameraId(id)
 
         running = true
@@ -166,7 +188,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         val rot = rotdeg(id)
         cmgr.closeCamera(false)
         // 用同一份 SurfaceTexture 重新准备，切换旋转角
-        cmgr.prepareCamera(gl.surfaceTexture, Cfg.W, Cfg.H, Cfg.FPS)
+        cmgr.prepareCamera(gl.surfaceTexture, vw, vh, vfps)
         cmgr.setCameraId(id)
         cmgr.openCameraId(id)
         gl.setStreamRotation(rot)
@@ -187,7 +209,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
                     val id = camId
                     Log.i(TAG, "尝试恢复相机 $id（第 $i 次）")
                     cmgr.closeCamera(false)
-                    cmgr.prepareCamera(gl.surfaceTexture, Cfg.W, Cfg.H, Cfg.FPS)
+                    cmgr.prepareCamera(gl.surfaceTexture, vw, vh, vfps)
                     cmgr.setCameraId(id)
                     cmgr.openCameraId(id)
                     venc.requestKeyframe()
@@ -208,7 +230,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         val bps = mbps * 1_000_000
         try {
             venc.setVideoBitrateOnFly(bps)
-            brea = bps
+            vbrate = bps
             Log.i(TAG, "码率已调整为 $mbps Mbps")
         } catch (e: Exception) {
             Log.e(TAG, "码率调整失败: ${e.message}")
@@ -216,7 +238,48 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     }
 
     // 当前码率（Mbps）
-    fun curbrate(): Int = brea / 1_000_000
+    fun curbrate(): Int = vbrate / 1_000_000
+
+    // 绑定界面预览输出：相机画面经 GL 额外渲染一份到此 Surface，
+    // 不经编码、不占网络，为最低开销的监看方式
+    fun attachpvw(surface: Surface) {
+        try {
+            gl.setPreviewResolution(vw, vh)
+            gl.attachPreview(surface)
+            Log.i(TAG, "预览已绑定")
+        } catch (e: Exception) {
+            Log.w(TAG, "预览绑定失败: ${e.message}")
+        }
+    }
+
+    // 解绑预览输出
+    fun detachpvw() {
+        try {
+            gl.deAttachPreview()
+            Log.i(TAG, "预览已解绑")
+        } catch (e: Exception) {
+            Log.w(TAG, "预览解绑失败: ${e.message}")
+        }
+    }
+
+    // 预览是否随管线就绪（供界面决定是否已可绑定）
+    fun glready(): Boolean = gl.isRunning
+
+    // 以新参数重建管线（分辨率变更须重建编码器与 GL，故整体重启）
+    // camId 为相机 ID，mbps 为码率，rot 为旋转角（-1 表示按传感器自动推算）
+    // 以新参数重建管线（分辨率/编码类型变更须重建编码器与 GL，故整体重启）
+    // id 相机 ID；mbps 码率；rot 旋转角（-1 表示按传感器自动）；cdc 0=H.265 1=H.264
+    fun reconf(id: String, w: Int, h: Int, fps: Int, mbps: Int, rot: Int, cdc: Int): Boolean {
+        Log.i(TAG, "重配置: 相机=$id ${w}x$h@${fps} ${mbps}Mbps 旋转=$rot 编码=${if (cdc == 0) "H265" else "H264"}")
+        stppipe()
+        vw = w
+        vh = h
+        vfps = fps
+        vbrate = mbps * 1_000_000
+        vrot = rot
+        vcodec = if (cdc == 0) VideoCodec.H265 else VideoCodec.H264
+        return strtpipe(id)
+    }
 
     // 停止管线并释放全部资源
     fun stppipe() {
@@ -225,6 +288,9 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         srvUp = false
         cmgr.closeCamera(true)
         gl.removeMediaCodecSurface()
+        // 停掉 GL 线程：其 SurfaceTexture 在下次 start() 时会重建，
+        // 若不停，重启后相机会仍绑在旧的 SurfaceTexture 上
+        gl.stop()
         venc.stop()
         rtsp.stopServer()
         Log.i(TAG, "管线已停止")
@@ -240,9 +306,9 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     fun issrvup(): Boolean = srvUp
 
     // 画面需顺时针旋转的角度。
-    // Cfg.ROT >= 0 时强制使用该值；否则由传感器方向推算（实测本机 HAL 不支持旋转）。
+    // vrot >= 0 时强制使用该值；否则由传感器方向推算（实测本机 HAL 不支持旋转）。
     fun rotdeg(id: String): Int {
-        if (Cfg.ROT >= 0) return Cfg.ROT
+        if (vrot >= 0) return vrot
         return try {
             val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val o = mgr.getCameraCharacteristics(id)
@@ -282,7 +348,8 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
                 val maxRes = res.maxByOrNull { it.width * it.height }
                 val maxTxt = maxRes?.let { "${it.width}x${it.height}" } ?: "?"
                 val tag = if (id in listed) "逻辑" else "副摄"
-                out.add(id to "相机 $id · $face · $tag · 最高$maxTxt · 旋转${rotdeg(id)}°")
+                // 用 | 分隔主标题与次级信息，便于界面分两行排版
+                out.add(id to "相机 $id · $face · $tag|最高 $maxTxt · 旋转 ${rotdeg(id)}°")
             } catch (_: Exception) {
                 // 该 ID 不可访问，跳过
             }
@@ -296,7 +363,23 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
 
     // 查询指定相机是否支持目标分辨率（切换前校验，避免会话创建失败）
     fun supres(id: String): Boolean =
-        cmgr.getCameraResolutions(id).any { it.width == Cfg.W && it.height == Cfg.H }
+        cmgr.getCameraResolutions(id).any { it.width == vw && it.height == vh }
+
+    // 列出指定相机支持的分辨率，去重后按像素数降序，供界面选择器使用
+    fun lstres(id: String): List<String> {
+        return try {
+            cmgr.getCameraResolutions(id)
+                .map { "${it.width}x${it.height}" }
+                .distinct()
+                .sortedByDescending { s ->
+                    val p = s.split("x")
+                    (p.getOrNull(0)?.toIntOrNull() ?: 0) * (p.getOrNull(1)?.toIntOrNull() ?: 0)
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "分辨率列表读取失败: ${e.message}")
+            listOf("${vw}x${vh}")
+        }
+    }
 
     // 诊断：记录公开相机列表、各相机的物理镜头 ID 与支持的分辨率
     // 同时写入文件，避免被系统日志刷屏冲掉

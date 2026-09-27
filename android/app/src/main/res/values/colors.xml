@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 配色严格对应 DESIGN.md 第 2 节：纯黑底 + 哑光橙强调，亮色一律压亮度 -->
+<resources>
+    <color name="bg">#000000</color>
+    <color name="surface">#0D0D0D</color>
+    <color name="surface_2">#161616</color>
+    <color name="line">#2A2A2A</color>
+    <color name="accent">#C0793A</color>
+    <color name="accent_dim">#5C3A1C</color>
+    <color name="text">#E6E6E6</color>
+    <color name="text_2">#9E9E9E</color>
+    <color name="text_3">#6B6B6B</color>
+    <color name="idle">#4A4A4A</color>
+    <color name="dead">#2E2E2E</color>
+</resources>
