@@ -131,12 +131,14 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         camId = id
         srvUp = false
 
+        // 编码尺寸即设定分辨率：GL 会通过 SurfaceTexture 变换矩阵处理传感器朝向，
+        // 残余角度由 setRotation 补足，故无需互换宽高（实测互换反而产生黑边）。
         venc.type = vcodec
         val ok = venc.prepareVideoEncoder(
             vw, vh, vfps, vbrate, 0, Cfg.IFRM, FormatVideoEncoder.SURFACE
         )
         if (!ok) {
-            Log.e(TAG, "编码器初始化失败，设备可能不支持 H.265")
+            Log.e(TAG, "编码器初始化失败，设备可能不支持所选编码格式")
             return false
         }
         venc.start()
@@ -244,7 +246,8 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     // 不经编码、不占网络，为最低开销的监看方式
     fun attachpvw(surface: Surface) {
         try {
-            gl.setPreviewResolution(vw, vh)
+            val (pw, ph) = cursize()
+            gl.setPreviewResolution(pw, ph)
             gl.attachPreview(surface)
             Log.i(TAG, "预览已绑定")
         } catch (e: Exception) {
@@ -313,12 +316,17 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
             val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val o = mgr.getCameraCharacteristics(id)
                 .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
-            (360 - o) % 360
+            // GL 经 SurfaceTexture 变换矩阵已处理传感器朝向，此处仅补足残余角度。
+            // 实证：前摄传感器 270° 时需补 180°（已目视确证），据此推得该式。
+            (o - 90 + 360) % 360
         } catch (e: Exception) {
             Log.w(TAG, "读取相机 $id 方向失败: ${e.message}")
             0
         }
     }
+
+    // 当前编码尺寸：与设定分辨率一致
+    fun cursize(): Pair<Int, Int> = Pair(vw, vh)
 
     // 枚举厂商公开的相机，返回 (ID, 显示名)
     //

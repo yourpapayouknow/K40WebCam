@@ -188,6 +188,41 @@ class MainAct : Activity() {
         pipe?.let { if (it.glready()) it.attachpvw(h.surface) }
     }
 
+    // 计算并应用预览尺寸：按有效画面比例等比装入可用区域，绝不溢出屏幕。
+    // 旋转 90/270 时画面内容转置，故比例随之互换 —— 这样 16:9 / 4:3 的横向来源
+    // 与 9:16 / 3:4 的纵向来源都能正确装入，且 SurfaceView 居中不留偏移。
+    private fun fitpvw(w: Int, h: Int, rot: Int) {
+        if (w <= 0 || h <= 0) return
+        val swap = rot == 90 || rot == 270
+        val aw = if (swap) h else w
+        val ah = if (swap) w else h
+        pvwBox.post {
+            val dm = resources.displayMetrics
+            val maxW = dm.widthPixels
+            // 上限取屏高的 40%，保证下方状态条与分页始终可见
+            val maxH = (dm.heightPixels * 0.4).toInt().coerceAtLeast(dp(140))
+            val ratio = aw.toDouble() / ah.toDouble()
+
+            val fw: Int
+            val fh: Int
+            if (maxW / ratio <= maxH) {
+                // 受宽度约束
+                fw = maxW
+                fh = (maxW / ratio).toInt()
+            } else {
+                // 受高度约束
+                fh = maxH
+                fw = (maxH * ratio).toInt()
+            }
+
+            pvwBox.layoutParams = pvwBox.layoutParams.apply { height = fh }
+            pvw.layoutParams = FrameLayout.LayoutParams(fw, fh).apply {
+                gravity = Gravity.CENTER
+            }
+            pvwBox.requestLayout()
+        }
+    }
+
     // 切换分页，带 180ms 淡入（DESIGN.md 7.5：允许简单过渡）
     private fun swtab(i: Int) {
         tab = i
@@ -223,17 +258,8 @@ class MainAct : Activity() {
             append(" · ").append(c[3]).append("Mbps · ").append(if (c[5] == 0) "H.265" else "H.264")
         }
 
-        // 预览比例：按输出流宽高设定。旋转只改画面内容朝向，不改流分辨率，
-        // 故此处不做宽高互换；并限制高度上限，保证下方分页始终可见。
-        pvwBox.post {
-            val wpx = pvwBox.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-            var hpx = (wpx.toLong() * c[1] / c[0]).toInt()
-            val cap = (resources.displayMetrics.heightPixels * 0.4).toInt()
-            if (hpx > cap) hpx = cap
-            if (hpx < dp(120)) hpx = dp(120)
-            pvwBox.layoutParams = pvwBox.layoutParams.apply { height = hpx }
-            pvwBox.requestLayout()
-        }
+        // 预览尺寸：按有效画面比例等比装入可用区域
+        fitpvw(c[0], c[1], c[4])
 
         // 分页标签样式
         for ((i, t) in tabBtns.withIndex()) {
@@ -260,7 +286,8 @@ class MainAct : Activity() {
     private fun mkpartab(p: CamPipe) {
         val c = p.cfgnow()
 
-        // 相机：作为参数项，用下拉选择
+        // ===== ① 信号源：决定画面的来源与采集尺寸 =====
+        content.addView(grp("① 信号源"))
         content.addView(lbl("相机"))
         val cams = p.lstcams()
         camIds = cams.map { it.first }
@@ -290,7 +317,8 @@ class MainAct : Activity() {
         }
         content.addView(resSpin, spinlp())
 
-        // 旋转角度
+        // ===== ② 几何校正：对采集到的画面做朝向变换 =====
+        content.addView(grp("② 几何校正"))
         content.addView(lbl("旋转角度"))
         rotSpin = Spinner(this).apply {
             adapter = ArrayAdapter(
@@ -301,7 +329,8 @@ class MainAct : Activity() {
         }
         content.addView(rotSpin, spinlp())
 
-        // 编码类型
+        // ===== ③ 编码：决定码流格式与质量 =====
+        content.addView(grp("③ 编码"))
         content.addView(lbl("编码类型"))
         cdcSpin = Spinner(this).apply {
             adapter = ArrayAdapter(
@@ -422,7 +451,15 @@ class MainAct : Activity() {
         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
     ).apply { bottomMargin = dp(16) }
 
-    // 分组小标题
+    // 信号链分组标题：比字段标签更醒目，用于标出处理阶段
+    private fun grp(s: String): TextView = TextView(this).apply {
+        text = s
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+        setTextColor(cTx2)
+        setPadding(0, dp(20), 0, dp(4))
+    }
+
+    // 字段标签
     private fun lbl(s: String): TextView = TextView(this).apply {
         text = s
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
