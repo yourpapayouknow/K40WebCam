@@ -129,20 +129,28 @@ class MainAct : Activity() {
         }
     }
 
-    // 点击相机按钮：未运行则启动，已运行则切换
+    // 点击相机按钮：未运行则启动，已运行则切换。
+    // 管线启停涉及 GL 异步初始化，须在后台线程执行以免阻塞界面。
     private fun oncam(id: String) {
         val p = pipe ?: return
-        try {
-            if (!p.isrun()) {
-                if (p.strtpipe(id)) refrcams() else status.text = "启动失败，请查看日志"
-            } else if (p.curcam() != id) {
-                p.switcam(id)
+        status.text = "处理中…"
+        Thread {
+            val err: String? = try {
+                if (!p.isrun()) {
+                    if (!p.strtpipe(id)) "启动失败，请查看日志" else null
+                } else {
+                    if (p.curcam() != id) p.switcam(id)
+                    null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "操作失败", e)
+                "操作失败: ${e.message}"
+            }
+            runOnUiThread {
+                if (err != null) status.text = err
                 refrcams()
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "操作失败", e)
-            status.text = "操作失败: ${e.message}"
-        }
+        }.start()
     }
 
     // 获取本机第一个非回环 IPv4 地址，用于展示 RTSP 地址

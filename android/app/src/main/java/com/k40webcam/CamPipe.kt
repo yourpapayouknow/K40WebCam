@@ -15,19 +15,19 @@ import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.video.FormatVideoEncoder
 import com.pedro.encoder.video.GetVideoData
 import com.pedro.encoder.video.VideoEncoder
+import com.pedro.library.view.GlStreamInterface
 import com.pedro.rtspserver.server.RtspServer
 import java.nio.ByteBuffer
 
 /**
- * 相机管线：Camera2 直连 MediaCodec 输入 Surface（零拷贝，不经 OpenGL），
- * 编码为 H.265 后交由 RtspServer 分发。
+ * 相机管线：Camera2 取景 → GL 旋转/送帧 → MediaCodec 硬编 → RTSP 分发。
  *
- * 关键设计一：MediaCodec 的输入 Surface 作为稳定锚点，切换相机时仅重绑相机，
- * 编码器与 Surface 全程不重建，从而同时取得最低占用与快速切换。
+ * 关于为何经 GL：实测本机两个相机的 `SCALER_AVAILABLE_ROTATE_AND_CROP_MODES` 均为 [0]
+ * （仅支持 OFF），即 **HAL 层不具备旋转能力**；而传感器方向为后置 90、前置 270，
+ * 直出画面是旋转的。要在发送端修正朝向，只能经 GPU 处理，故采用 GL 路径
+ * （GlStreamInterface 仅做旋转与送帧，不引入滤镜等额外处理）。
  *
- * 关键设计二：RtspServer.startServer() 内部仅等待 5 秒的视频参数集（CSD），
- * 超时则不会创建监听。故必须先启动编码器与相机，待 onVideoInfo 回调拿到
- * VPS/SPS/PPS 后再启动 RTSP 服务，否则端口不会监听。
+ * 相机切换：保留编码器与 GL 上下文，仅重绑相机并更新旋转角，无需重建管线。
  *
  * 注意：Kotlin 属性按声明顺序初始化，回调对象须早于依赖它们的成员声明。
  */
@@ -78,6 +78,10 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
 
     private val venc = VideoEncoder(this)
     private val cmgr = Camera2ApiManager(ctx)
+
+    // GL 桥接：相机帧经此旋转后送入编码器
+    private val gl by lazy { GlStreamInterface(ctx) }
+
     private val rtsp = RtspServer(connChk, port)
 
     @Volatile
@@ -89,7 +93,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
 
     private var camId = "0"
 
-    // 启动管线：先启动编码器与相机，RTSP 服务待参数集就绪后自动开启
+    // 启动管线：编码器 → GL 桥接 → 相机；RTSP 服务待参数集就绪后自动开启
     fun strtpipe(id: String): Boolean {
         if (running) return true
         camId = id
@@ -103,10 +107,31 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
             Log.e(TAG, "编码器初始化失败，设备可能不支持 H.265")
             return false
         }
-        // 注意：必须调用无参 start()，它经由 BaseEncoder.start(long) 触发 initCodec()，
-        // 而 codec.start() 正是在 initCodec() 中执行。直接调用 start(boolean) 只设标志位，
-        // 编码器不会真正启动。
         venc.start()
+
+        // GL 桥接：设定输出尺寸后启动。
+        // 注意：GlStreamInterface 的 SurfaceTexture 在 start() 的异步任务中创建，
+        // 必须等 isRunning 为真后再取用，否则拿到 null。此方法应在后台线程调用。
+        gl.setEncoderSize(Cfg.W, Cfg.H)
+        gl.start()
+        var waited = 0
+        while (!gl.isRunning && waited < 3000) {
+            try {
+                Thread.sleep(50)
+            } catch (_: InterruptedException) {
+            }
+            waited += 50
+        }
+        if (!gl.isRunning) {
+            Log.e(TAG, "GL 初始化超时，管线未启动")
+            venc.stop()
+            return false
+        }
+
+        gl.addMediaCodecSurface(venc.inputSurface)
+        // 用 setRotation（内部作用到相机纹理）而非 setStreamRotation：
+        // 本机相机输出本身即为旋转状态，需在纹理采样阶段校正
+        gl.setRotation(rotdeg(id))
 
         // 此处不启动 RTSP：须等编码器输出 CSD，见 onVideoInfo
         rtsp.setVideoCodec(VideoCodec.H265)
@@ -115,28 +140,28 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         rtsp.setOnlyVideo(true)
 
         cmgr.setCameraCallbacks(camCb)
-        cmgr.prepareCamera(venc.inputSurface, Cfg.FPS)
+        // 相机输出到 GL 的 SurfaceTexture，由 GL 完成旋转后送编码器
+        cmgr.prepareCamera(gl.surfaceTexture, Cfg.W, Cfg.H, Cfg.FPS)
         cmgr.openCameraId(id)
 
         running = true
-        Log.i(TAG, "管线已启动: 相机=$id 端口=$port（等待参数集）")
+        Log.i(TAG, "管线已启动: 相机=$id 旋转=${rotdeg(id)}° 端口=$port（等待参数集）")
         return true
     }
 
-    // 切换相机：保留编码器与输入 Surface，仅重绑相机，随后强制关键帧供对端立即解码
+    // 切换相机：保留编码器与 GL 上下文，仅重绑相机并更新旋转角
     fun switcam(id: String) {
         if (!running) return
-        val surf = venc.inputSurface ?: run {
-            Log.e(TAG, "输入 Surface 为空，无法切换")
-            return
-        }
         camId = id
+        val rot = rotdeg(id)
         cmgr.closeCamera(false)
-        cmgr.prepareCamera(surf, Cfg.FPS)
+        // 用同一份 SurfaceTexture 重新准备，切换旋转角
+        cmgr.prepareCamera(gl.surfaceTexture, Cfg.W, Cfg.H, Cfg.FPS)
         cmgr.setCameraId(id)
         cmgr.openCameraId(id)
+        gl.setStreamRotation(rot)
         venc.requestKeyframe()
-        Log.i(TAG, "已切换到相机 $id")
+        Log.i(TAG, "已切换到相机 $id，旋转=$rot°")
     }
 
     // 停止管线并释放全部资源
@@ -145,6 +170,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         running = false
         srvUp = false
         cmgr.closeCamera(true)
+        gl.removeMediaCodecSurface()
         venc.stop()
         rtsp.stopServer()
         Log.i(TAG, "管线已停止")
@@ -159,11 +185,26 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     // RTSP 服务是否已就绪
     fun issrvup(): Boolean = srvUp
 
+    // 画面需顺时针旋转的角度。
+    // Cfg.ROT >= 0 时强制使用该值；否则由传感器方向推算（实测本机 HAL 不支持旋转）。
+    fun rotdeg(id: String): Int {
+        if (Cfg.ROT >= 0) return Cfg.ROT
+        return try {
+            val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val o = mgr.getCameraCharacteristics(id)
+                .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+            (360 - o) % 360
+        } catch (e: Exception) {
+            Log.w(TAG, "读取相机 $id 方向失败: ${e.message}")
+            0
+        }
+    }
+
     // 枚举设备上全部相机，返回 (ID, 显示名)
     //
-    // 注意：MIUI 会把副摄（超广角/微距）从 cameraIdList 中隐藏，仅暴露逻辑主摄与前置。
-    // 但这些 ID 仍可被 getCameraCharacteristics/openCamera 访问，故此处直接探测
-    // 0..8 号 ID，把可访问的全部列出，以达成「自由调用所有摄像头」。
+    // 注意：MIUI 会把副摄从 cameraIdList 中隐藏，仅暴露逻辑主摄与前置。
+    // 但这些 ID 仍可被 getCameraCharacteristics 访问，故此处直接探测 0..8 号 ID，
+    // 把可访问的全部列出。
     fun lstcams(): List<Pair<String, String>> {
         val mgr = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val out = mutableListOf<Pair<String, String>>()
@@ -179,7 +220,6 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
                     CameraCharacteristics.LENS_FACING_EXTERNAL -> "外接"
                     else -> "未知"
                 }
-                // 用最高分辨率与支持数辅助区分副摄
                 val res = try {
                     cmgr.getCameraResolutions(id)
                 } catch (_: Exception) {
@@ -187,20 +227,22 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
                 }
                 val maxRes = res.maxByOrNull { it.width * it.height }
                 val maxTxt = maxRes?.let { "${it.width}x${it.height}" } ?: "?"
-                // 逻辑相机（公开列出）与隐藏副摄分别标注
                 val tag = if (id in listed) "逻辑" else "副摄"
-                out.add(id to "相机 $id · $face · $tag · 最高$maxTxt")
+                out.add(id to "相机 $id · $face · $tag · 最高$maxTxt · 旋转${rotdeg(id)}°")
             } catch (_: Exception) {
                 // 该 ID 不可访问，跳过
             }
         }
 
-        // 若探测范围内一个都没找到，退回官方列表，避免界面空白
         if (out.isEmpty()) {
             for (id in listed) out.add(id to "相机 $id")
         }
         return out
     }
+
+    // 查询指定相机是否支持目标分辨率（切换前校验，避免会话创建失败）
+    fun supres(id: String): Boolean =
+        cmgr.getCameraResolutions(id).any { it.width == Cfg.W && it.height == Cfg.H }
 
     // 诊断：记录公开相机列表、各相机的物理镜头 ID 与支持的分辨率
     // 同时写入文件，避免被系统日志刷屏冲掉
@@ -223,9 +265,8 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
                 listOf("读取失败: ${e.message}")
             }
             w("相机 $id: facing=$facing, 物理镜头=$phys")
-            // 传感器方向与可用旋转模式，用于修正画面朝向
             val orient = ch.get(CameraCharacteristics.SENSOR_ORIENTATION)
-            w("相机 $id SENSOR_ORIENTATION=$orient")
+            w("相机 $id SENSOR_ORIENTATION=$orient 建议旋转=${rotdeg(id)}°")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val rc = ch.get(CameraCharacteristics.SCALER_AVAILABLE_ROTATE_AND_CROP_MODES)
                 w("相机 $id 可用旋转裁剪模式=${rc?.toList()}")
@@ -233,9 +274,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
             try {
                 val res = cmgr.getCameraResolutions(id)
                 val has1080 = res.any { it.width == 1920 && it.height == 1080 }
-                val has4k = res.any { it.width == 3840 && it.height == 2160 }
-                w("相机 $id 分辨率数=${res.size}, 支持1080p=$has1080, 支持4K=$has4k")
-                w("相机 $id 前10个分辨率=${res.take(10).joinToString()}")
+                w("相机 $id 分辨率数=${res.size}, 支持1080p=$has1080")
             } catch (e: Exception) {
                 w("相机 $id 分辨率查询失败: ${e.message}")
             }
@@ -252,23 +291,21 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
             w("getPhysicalCamerasAvailable 失败: ${e.message}")
         }
 
-        // 决定性测试：逐个探测 0-7 号 ID，确认副摄是否可被第三方打开
-        w("--- 逐 ID 探测（验证副摄能否绕过 cameraIdList 访问）---")
-        for (i in 0..7) {
+        w("--- 逐 ID 探测 ---")
+        for (i in 0..8) {
             val sid = i.toString()
             try {
                 val ch = mgr.getCameraCharacteristics(sid)
                 val facing = ch.get(CameraCharacteristics.LENS_FACING)
                 val res = cmgr.getCameraResolutions(sid)
-                w("ID $sid: 可访问 ✅ facing=$facing 分辨率数=${res.size}")
+                w("ID $sid: 可访问 ✅ facing=$facing 分辨率数=${res.size} 旋转=${rotdeg(sid)}°")
             } catch (e: Exception) {
-                w("ID $sid: 不可访问 ❌ ${e.javaClass.simpleName}: ${e.message}")
+                w("ID $sid: 不可访问 ❌ ${e.javaClass.simpleName}")
             }
         }
 
         w("=== 相机诊断结束 ===")
 
-        // 落盘，供 adb 拉取
         try {
             val f = java.io.File(ctx.getExternalFilesDir(null), "camdiag.txt")
             f.writeText(sb.toString())
@@ -277,10 +314,6 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
             Log.w(TAG, "诊断写文件失败: ${e.message}")
         }
     }
-
-    // 查询指定相机是否支持目标分辨率（切换前校验，避免会话创建失败）
-    fun supres(id: String): Boolean =
-        cmgr.getCameraResolutions(id).any { it.width == Cfg.W && it.height == Cfg.H }
 
     // ===== GetVideoData 回调：编码器 → RTSP =====
 
