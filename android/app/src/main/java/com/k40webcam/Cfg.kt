@@ -3,11 +3,11 @@ package com.k40webcam
 // 全局配置常量：编码参数与 RTSP 端口集中于此，避免散落各处
 object Cfg {
 
-    // 视频分辨率（宽）
-    const val W = 1920
+    // 视频分辨率（宽）—— 默认竖屏输出，与手机实际摆放一致
+    const val W = 1080
 
     // 视频分辨率（高）
-    const val H = 1080
+    const val H = 1920
 
     // 目标帧率
     const val FPS = 30

@@ -382,20 +382,23 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         }
     }
 
-    // 查询指定相机是否支持目标分辨率（切换前校验，避免会话创建失败）
+    // 查询指定相机是否支持目标分辨率（切换前校验，避免会话创建失败）。
+    // 相机上报的尺寸是单一朝向，而本项目允许宽高互换，故两个朝向都接受。
     fun supres(id: String): Boolean =
-        cmgr.getCameraResolutions(id).any { it.width == vw && it.height == vh }
+        cmgr.getCameraResolutions(id).any {
+            (it.width == vw && it.height == vh) || (it.width == vh && it.height == vw)
+        }
 
-    // 列出指定相机支持的分辨率，去重后按像素数降序，供界面选择器使用
+    // 列出指定相机的可选输出分辨率。
+    // 每个支持的尺寸同时给出**横竖两种朝向**（如 1920x1080 与 1080x1920），
+    // 使分辨率不被钉死、宽高可互换，以匹配手机的实际摆放方向。
     fun lstres(id: String): List<String> {
         return try {
-            cmgr.getCameraResolutions(id)
-                .map { "${it.width}x${it.height}" }
+            val base = cmgr.getCameraResolutions(id)
+                .flatMap { listOf("${it.width}x${it.height}", "${it.height}x${it.width}") }
                 .distinct()
-                .sortedByDescending { s ->
-                    val p = s.split("x")
-                    (p.getOrNull(0)?.toIntOrNull() ?: 0) * (p.getOrNull(1)?.toIntOrNull() ?: 0)
-                }
+            // 当前设定的分辨率置顶，便于回选
+            (listOf("${vw}x${vh}") + base).distinct()
         } catch (e: Exception) {
             Log.w(TAG, "分辨率列表读取失败: ${e.message}")
             listOf("${vw}x${vh}")
