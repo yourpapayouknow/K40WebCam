@@ -48,14 +48,13 @@ class MainAct : Activity() {
     private var autoDone = false
     private var tab = TAB_PAR
 
-    // 双监看视窗：左侧 PVW (预监)，右侧 PGM (主输出/直播)
-    private lateinit var pvwBox: AspectRatioFrameLayout
-    private lateinit var pvw: SurfaceView
-    private lateinit var pvwSubTx: TextView
-
-    private lateinit var pgmBox: AspectRatioFrameLayout
-    private lateinit var pgm: SurfaceView
-    private lateinit var pgmSubTx: TextView
+    // 监看视窗：合并单视窗，平时显示 PGM，调参即刻显示 PVW，CUT 后切回 PGM
+    private lateinit var monitorCard: LinearLayout
+    private lateinit var monitorBox: AspectRatioFrameLayout
+    private lateinit var monitorSurface: SurfaceView
+    private lateinit var modeBadge: TextView
+    private lateinit var modeSubTx: TextView
+    private var showingPvw = false
 
     // 导播控制与状态条
     private lateinit var statusTx: TextView
@@ -112,7 +111,8 @@ class MainAct : Activity() {
     private val cTx by lazy { getColor(R.color.text) }
     private val cTx2 by lazy { getColor(R.color.text_2) }
     private val cTx3 by lazy { getColor(R.color.text_3) }
-    private val cPvwGreen = Color.parseColor("#388E3C")
+    private val cPgmRed = Color.parseColor("#E53935")
+    private val cPvwGreen = Color.parseColor("#2E7D32")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -168,132 +168,71 @@ class MainAct : Activity() {
         }
         root.addView(statusTx)
 
-        // 2. 双监视窗：左侧 PVW (预监)，右侧 PGM (主输出/直播)
-        val monitorsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(12), dp(4), dp(12), dp(4))
-        }
-
-        // --- 左侧 PVW 卡片 ---
-        val pvwCard = LinearLayout(this).apply {
+        // 2. 监看视窗：合并单视窗，平时显示 PGM，调参即刻显示 PVW，CUT 后切回 PGM
+        monitorCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = bgbox(false, cPvwGreen)
-            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = bgbox(true, cPgmRed)
+            setPadding(dp(8), dp(6), dp(8), dp(8))
         }
-        val pvwHeader = LinearLayout(this).apply {
+        val monitorHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(4))
+            setPadding(0, 0, 0, dp(6))
         }
-        val pvwBadge = TextView(this).apply {
-            text = "PVW"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+        modeBadge = TextView(this).apply {
+            text = "PGM"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
                 cornerRadius = dp(3).toFloat()
-                setColor(cPvwGreen)
+                setColor(cPgmRed)
             }
-            setPadding(dp(5), dp(1), dp(5), dp(1))
+            setPadding(dp(6), dp(2), dp(6), dp(2))
         }
-        pvwHeader.addView(pvwBadge)
-        pvwSubTx = TextView(this).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setTextColor(cTx3)
-            setPadding(dp(6), 0, 0, 0)
+        monitorHeader.addView(modeBadge)
+
+        modeSubTx = TextView(this).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(cTx2)
+            setPadding(dp(8), 0, 0, 0)
         }
-        pvwHeader.addView(pvwSubTx)
-        pvwCard.addView(pvwHeader)
+        monitorHeader.addView(modeSubTx, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        monitorCard.addView(monitorHeader)
 
-        val monitorH = (resources.displayMetrics.heightPixels * 0.25f).toInt()
+        val monitorH = (resources.displayMetrics.heightPixels * 0.30f).toInt()
 
-        pvwBox = AspectRatioFrameLayout(this).apply {
+        monitorBox = AspectRatioFrameLayout(this).apply {
             setBackgroundColor(cBg)
             setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
         }
-        pvw = SurfaceView(this)
-        pvwBox.addView(
-            pvw,
+        monitorSurface = SurfaceView(this)
+        monitorBox.addView(
+            monitorSurface,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
-        pvwCard.addView(
-            pvwBox,
+        monitorCard.addView(
+            monitorBox,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 monitorH
             ).apply { gravity = Gravity.CENTER }
         )
-        pvw.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(h: SurfaceHolder) = bindpvw(h, pvw.width, pvw.height)
-            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) = bindpvw(h, w, ht)
+        monitorSurface.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(h: SurfaceHolder) = bindMonitor(h, monitorSurface.width, monitorSurface.height)
+            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) = bindMonitor(h, w, ht)
             override fun surfaceDestroyed(h: SurfaceHolder) {
                 pipe?.detachpvw(h.surface)
             }
         })
-        monitorsRow.addView(pvwCard, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
-        // 间距
-        monitorsRow.addView(View(this), LinearLayout.LayoutParams(dp(8), ViewGroup.LayoutParams.MATCH_PARENT))
-
-        // --- 右侧 PGM 卡片 ---
-        val pgmCard = LinearLayout(this).apply {
+        val monitorContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = bgbox(true)
-            setPadding(dp(6), dp(6), dp(6), dp(6))
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            addView(monitorCard)
         }
-        val pgmHeader = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(4))
-        }
-        val pgmBadge = TextView(this).apply {
-            text = "PGM"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setTextColor(Color.BLACK)
-            background = GradientDrawable().apply {
-                cornerRadius = dp(3).toFloat()
-                setColor(cAcc)
-            }
-            setPadding(dp(5), dp(1), dp(5), dp(1))
-        }
-        pgmHeader.addView(pgmBadge)
-        pgmSubTx = TextView(this).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setTextColor(cTx3)
-            setPadding(dp(6), 0, 0, 0)
-        }
-        pgmHeader.addView(pgmSubTx)
-        pgmCard.addView(pgmHeader)
-
-        pgmBox = AspectRatioFrameLayout(this).apply {
-            setBackgroundColor(cBg)
-            setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
-        }
-        pgm = SurfaceView(this)
-        pgmBox.addView(
-            pgm,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        )
-        pgmCard.addView(
-            pgmBox,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                monitorH
-            ).apply { gravity = Gravity.CENTER }
-        )
-        pgm.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(h: SurfaceHolder) = bindpgm(h, pgm.width, pgm.height)
-            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) = bindpgm(h, w, ht)
-            override fun surfaceDestroyed(h: SurfaceHolder) {
-                pipe?.detachpvw(h.surface)
-            }
-        })
-        monitorsRow.addView(pgmCard, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-
-        root.addView(monitorsRow)
+        root.addView(monitorContainer)
 
         // 3. CUT 切换控制条：兼具导播切换与当前状态指示
         val cutBar = LinearLayout(this).apply {
@@ -348,22 +287,17 @@ class MainAct : Activity() {
         return root
     }
 
-    private fun bindpvw(h: SurfaceHolder, w: Int, ht: Int) {
-        pipe?.let { if (it.glready()) it.attachpvw(h.surface, w, ht, stgW, stgH) }
-    }
-
-    private fun bindpgm(h: SurfaceHolder, w: Int, ht: Int) {
+    private fun bindMonitor(h: SurfaceHolder, w: Int, ht: Int) {
         val c = pipe?.cfgnow() ?: intArrayOf(Cfg.W, Cfg.H)
-        pipe?.let { if (it.glready()) it.attachpvw(h.surface, w, ht, c[0], c[1]) }
+        val targetW = if (showingPvw) stgW else c[0]
+        val targetH = if (showingPvw) stgH else c[1]
+        pipe?.let { if (it.glready()) it.attachpvw(h.surface, w, ht, targetW, targetH) }
     }
 
-    // 设置并排监看视窗的宽高比
-    private fun fitpvw(liveW: Int, liveH: Int) {
-        if (liveW > 0 && liveH > 0) {
-            pgmBox.setAspectRatio(liveW.toFloat() / liveH.toFloat())
-        }
-        if (stgW > 0 && stgH > 0) {
-            pvwBox.setAspectRatio(stgW.toFloat() / stgH.toFloat())
+    // 设置监看视窗的宽高比
+    private fun fitMonitor(w: Int, h: Int) {
+        if (w > 0 && h > 0) {
+            monitorBox.setAspectRatio(w.toFloat() / h.toFloat())
         }
     }
 
@@ -374,25 +308,38 @@ class MainAct : Activity() {
         refr()
     }
 
-    // 执行 CUT 切换，将 PVW (Staged) 参数真正推送到 PGM (Live)
+    // 执行 CUT 切换，将预监参数真正推送到主路直播，并恢复显示 PGM
     private fun execCut() {
         val p = pipe ?: return
+        showingPvw = false
         runjob {
             p.reconf(stgCam, stgW, stgH, Cfg.FPS, stgMbps, stgRot, stgCdc)
         }
     }
 
-    // 预监状态更新（刷新界面指示与 CUT 按钮，并即时同步预监画面比例与 GL 配置）
+    // 预监状态更新：调参即刻显示 PVW，CUT 后切回 PGM，平时显示 PGM
     private fun refrStaging(p: CamPipe) {
         val c = p.cfgnow()
         val curRot = if (Cfg.ROT < 0 && c[4] == p.rotdeg(p.curcam())) -1 else c[4]
         val isStaged = (stgCam != p.curcam() || stgW != c[0] || stgH != c[1] ||
                 stgRot != curRot || stgMbps != c[3] || stgCdc != c[5])
 
-        pvwSubTx.text = "CAM$stgCam · ${stgW}×${stgH}"
-        pgmSubTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]}"
+        showingPvw = isStaged
 
-        if (isStaged) {
+        val targetW = if (showingPvw) stgW else c[0]
+        val targetH = if (showingPvw) stgH else c[1]
+
+        if (showingPvw) {
+            modeBadge.text = "PVW"
+            modeBadge.setTextColor(Color.WHITE)
+            modeBadge.background = GradientDrawable().apply {
+                cornerRadius = dp(3).toFloat()
+                setColor(cPvwGreen)
+            }
+            monitorCard.background = bgbox(true, cPvwGreen)
+            val cdcName = if (stgCdc == 1) "H.264" else "H.265"
+            modeSubTx.text = "CAM$stgCam · ${stgW}×${stgH} · ${stgMbps}Mbps · $cdcName"
+
             cutHintTx.text = "预监已修改"
             cutHintTx.setTextColor(cAcc)
             cutBtn.setTextColor(Color.BLACK)
@@ -402,6 +349,16 @@ class MainAct : Activity() {
             }
             cutBtn.text = "CUT"
         } else {
+            modeBadge.text = "PGM"
+            modeBadge.setTextColor(Color.WHITE)
+            modeBadge.background = GradientDrawable().apply {
+                cornerRadius = dp(3).toFloat()
+                setColor(cPgmRed)
+            }
+            monitorCard.background = bgbox(true, cPgmRed)
+            val cdcName = if (c[5] == 1) "H.264" else "H.265"
+            modeSubTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · ${c[3]}Mbps · $cdcName"
+
             cutHintTx.text = "已同步"
             cutHintTx.setTextColor(cTx3)
             cutBtn.setTextColor(cTx3)
@@ -409,11 +366,9 @@ class MainAct : Activity() {
             cutBtn.text = "已同步"
         }
 
-        // 即时更新两路监视器的长宽比与 GL 渲染视口
-        fitpvw(c[0], c[1])
+        fitMonitor(targetW, targetH)
         if (p.isrun() && p.glready()) {
-            p.attachpvw(pvw.holder.surface, pvw.width, pvw.height, stgW, stgH)
-            p.attachpvw(pgm.holder.surface, pgm.width, pgm.height, c[0], c[1])
+            p.attachpvw(monitorSurface.holder.surface, monitorSurface.width, monitorSurface.height, targetW, targetH)
         }
     }
 
@@ -462,11 +417,12 @@ class MainAct : Activity() {
             TAB_PST -> mkpsttab(p)
         }
 
-        // 管线可能在重启后使监看失效，重新绑定两路 Surface
+        // 管线可能在重启后使监看失效，重新绑定监看 Surface
         if (p.isrun() && p.glready()) {
             try {
-                p.attachpvw(pvw.holder.surface, pvw.width, pvw.height, stgW, stgH)
-                p.attachpvw(pgm.holder.surface, pgm.width, pgm.height, c[0], c[1])
+                val targetW = if (showingPvw) stgW else c[0]
+                val targetH = if (showingPvw) stgH else c[1]
+                p.attachpvw(monitorSurface.holder.surface, monitorSurface.width, monitorSurface.height, targetW, targetH)
             } catch (_: Exception) {
             }
         }
