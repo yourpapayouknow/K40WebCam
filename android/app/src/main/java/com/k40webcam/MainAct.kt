@@ -312,8 +312,10 @@ class MainAct : Activity() {
     private fun execCut() {
         val p = pipe ?: return
         showingPvw = false
+        runOnUiThread { refrStaging(p) }
         runjob {
             p.reconf(stgCam, stgW, stgH, Cfg.FPS, stgMbps, stgRot, stgCdc)
+            runOnUiThread { refrStaging(p) }
         }
     }
 

@@ -16,7 +16,9 @@ import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.video.FormatVideoEncoder
 import com.pedro.encoder.video.GetVideoData
 import com.pedro.encoder.video.VideoEncoder
+import com.pedro.encoder.utils.ViewPort
 import com.pedro.encoder.utils.gl.AspectRatioMode
+import com.pedro.encoder.utils.gl.SizeCalculator
 import com.pedro.library.view.GlStreamInterface
 import com.pedro.library.view.preview.MultiPreviewConfig
 import com.pedro.rtspserver.server.RtspServer
@@ -264,20 +266,21 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
             if (gl.isRunning && sw > 0 && sh > 0) {
                 val tw = if (targetW > 0) targetW else vw
                 val th = if (targetH > 0) targetH else vh
-                val isPortrait = tw < th
+                val isPortrait = vw < vh
+                val vp = SizeCalculator.calculateViewPort(AspectRatioMode.Fill, sw, sh, vw, vh)
                 val cfg = MultiPreviewConfig(
                     width = sw,
                     height = sh,
                     isPortrait = isPortrait,
-                    aspectRatioMode = AspectRatioMode.Adjust,
-                    viewPort = null
+                    aspectRatioMode = AspectRatioMode.Fill,
+                    viewPort = vp
                 )
                 if (gl.hasMultiPreviewSurface(surface)) {
                     gl.updateMultiPreviewConfig(surface, cfg)
-                    Log.i(TAG, "监看 Surface 已更新配置: ${sw}x${sh} 目标=${tw}x${th} 竖屏=$isPortrait")
+                    Log.i(TAG, "监看 Surface 已更新配置: ${sw}x${sh} 目标=${tw}x${th} vp=$vp 竖屏=$isPortrait")
                 } else {
                     gl.addMultiPreviewSurface(surface, cfg)
-                    Log.i(TAG, "监看 Surface 已初始绑定: ${sw}x${sh} 目标=${tw}x${th} 竖屏=$isPortrait")
+                    Log.i(TAG, "监看 Surface 已初始绑定: ${sw}x${sh} 目标=${tw}x${th} vp=$vp 竖屏=$isPortrait")
                 }
             }
         } catch (e: Exception) {
