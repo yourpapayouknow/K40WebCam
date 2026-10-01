@@ -243,12 +243,34 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         }
     }
 
-    // 当前码率（Mbps）
-    fun curbrate(): Int = vbrate / 1_000_000
+    // 绑定界面监看输出：采用轻量分辨率，降低发热与功耗
+    fun attachpvw(surface: Surface, sw: Int, sh: Int) {
+        try {
+            val isPortrait = vw < vh
+            gl.setIsPortrait(isPortrait)
+            val pw = if (isPortrait) 540 else 960
+            val ph = if (isPortrait) 960 else 540
+            gl.setPreviewResolution(pw, ph)
+            gl.attachPreview(surface)
+            Log.i(TAG, "监看已绑定，轻量尺寸: ${pw}x${ph}")
+        } catch (e: Exception) {
+            Log.w(TAG, "监看绑定失败: ${e.message}")
+        }
+    }
 
+    // 解绑监看输出
+    fun detachpvw() {
+        try {
+            gl.deAttachPreview()
+            Log.i(TAG, "监看已解绑")
+        } catch (e: Exception) {
+            Log.w(TAG, "监看解绑失败: ${e.message}")
+        }
+    }
 
     // 预览是否随管线就绪（供界面决定是否已可绑定）
     fun glready(): Boolean = gl.isRunning
+
 
     // 以新参数重建管线（分辨率变更须重建编码器与 GL，故整体重启）
     // camId 为相机 ID，mbps 为码率，rot 为旋转角（-1 表示按传感器自动推算）
@@ -274,8 +296,9 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         cmgr.closeCamera(true)
         gl.removeMediaCodecSurface()
         try {
-            gl.removeAllMultiPreviewSurfaces()
+            gl.deAttachPreview()
         } catch (_: Exception) {}
+
         // 停掉 GL 线程：其 SurfaceTexture 在下次 start() 时会重建，
         // 若不停，重启后相机会仍绑在旧的 SurfaceTexture 上
         gl.stop()
