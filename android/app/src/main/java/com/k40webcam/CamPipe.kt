@@ -16,6 +16,7 @@ import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.video.FormatVideoEncoder
 import com.pedro.encoder.video.GetVideoData
 import com.pedro.encoder.video.VideoEncoder
+import com.pedro.encoder.utils.gl.AspectRatioMode
 import com.pedro.library.view.GlStreamInterface
 import com.pedro.library.view.preview.MultiPreviewConfig
 import com.pedro.rtspserver.server.RtspServer
@@ -257,24 +258,30 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     // 当前码率（Mbps）
     fun curbrate(): Int = vbrate / 1_000_000
 
-    // 绑定界面监看输出（支持同时向 PVW 与 PGM 两个 Surface 渲染）：
-    // 相机画面经 GL 额外渲染一份到此 Surface，不经编码、不占网络。
-    fun attachpvw(surface: Surface, sw: Int, sh: Int) {
+    // 绑定或更新界面监看输出（支持 PVW 与 PGM 两个 Surface 独立目标比例并渲染）：
+    fun attachpvw(surface: Surface, sw: Int, sh: Int, targetW: Int = 0, targetH: Int = 0) {
         try {
             pvwSurfaces[surface] = Pair(sw, sh)
             if (gl.isRunning && sw > 0 && sh > 0) {
-                val isPortrait = vw < vh
-                gl.setIsPortrait(isPortrait)
+                val tw = if (targetW > 0) targetW else vw
+                val th = if (targetH > 0) targetH else vh
+                val isPortrait = tw < th
                 val cfg = MultiPreviewConfig(
                     width = sw,
                     height = sh,
-                    isPortrait = isPortrait
+                    isPortrait = isPortrait,
+                    aspectRatioMode = AspectRatioMode.Adjust
                 )
-                gl.addMultiPreviewSurface(surface, cfg)
-                Log.i(TAG, "监看 Surface 已绑定: ${sw}x${sh} 竖屏=$isPortrait")
+                if (gl.hasMultiPreviewSurface(surface)) {
+                    gl.updateMultiPreviewConfig(surface, cfg)
+                    Log.i(TAG, "监看 Surface 已更新配置: ${sw}x${sh} 目标=${tw}x${th} 竖屏=$isPortrait")
+                } else {
+                    gl.addMultiPreviewSurface(surface, cfg)
+                    Log.i(TAG, "监看 Surface 已初始绑定: ${sw}x${sh} 目标=${tw}x${th} 竖屏=$isPortrait")
+                }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "监看绑定失败: ${e.message}")
+            Log.w(TAG, "监看配置失败: ${e.message}")
         }
     }
 

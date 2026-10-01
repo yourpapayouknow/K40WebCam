@@ -204,6 +204,8 @@ class MainAct : Activity() {
         pvwHeader.addView(pvwSubTx)
         pvwCard.addView(pvwHeader)
 
+        val monitorH = (resources.displayMetrics.heightPixels * 0.25f).toInt()
+
         pvwBox = AspectRatioFrameLayout(this).apply {
             setBackgroundColor(cBg)
             setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
@@ -219,8 +221,8 @@ class MainAct : Activity() {
             pvwBox,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { gravity = Gravity.CENTER_HORIZONTAL }
+                monitorH
+            ).apply { gravity = Gravity.CENTER }
         )
         pvw.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(h: SurfaceHolder) = bindpvw(h, pvw.width, pvw.height)
@@ -279,12 +281,12 @@ class MainAct : Activity() {
             pgmBox,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { gravity = Gravity.CENTER_HORIZONTAL }
+                monitorH
+            ).apply { gravity = Gravity.CENTER }
         )
         pgm.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(h: SurfaceHolder) = bindpvw(h, pgm.width, pgm.height)
-            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) = bindpvw(h, w, ht)
+            override fun surfaceCreated(h: SurfaceHolder) = bindpgm(h, pgm.width, pgm.height)
+            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) = bindpgm(h, w, ht)
             override fun surfaceDestroyed(h: SurfaceHolder) {
                 pipe?.detachpvw(h.surface)
             }
@@ -347,32 +349,21 @@ class MainAct : Activity() {
     }
 
     private fun bindpvw(h: SurfaceHolder, w: Int, ht: Int) {
-        pipe?.let { if (it.glready()) it.attachpvw(h.surface, w, ht) }
+        pipe?.let { if (it.glready()) it.attachpvw(h.surface, w, ht, stgW, stgH) }
     }
 
-    // 设置并排监看视窗的宽高比与高度限制
-    private fun fitpvw(w: Int, h: Int) {
-        if (w <= 0 || h <= 0) return
-        val arLive = w.toFloat() / h.toFloat()
-        val arStg = if (stgW > 0 && stgH > 0) stgW.toFloat() / stgH.toFloat() else arLive
+    private fun bindpgm(h: SurfaceHolder, w: Int, ht: Int) {
+        val c = pipe?.cfgnow() ?: intArrayOf(Cfg.W, Cfg.H)
+        pipe?.let { if (it.glready()) it.attachpvw(h.surface, w, ht, c[0], c[1]) }
+    }
 
-        pvwBox.setAspectRatio(arStg)
-        pgmBox.setAspectRatio(arLive)
-
-        val screenW = resources.displayMetrics.widthPixels
-        val maxH = (resources.displayMetrics.heightPixels * 0.28f).toInt()
-        val cardW = (screenW - dp(24) - dp(8)) / 2
-        val targetH = (cardW / arLive).toInt().coerceAtMost(maxH).coerceAtLeast(dp(90))
-
-        val lpPvw = pvwBox.layoutParams
-        if (lpPvw != null && lpPvw.height != targetH) {
-            lpPvw.height = targetH
-            pvwBox.layoutParams = lpPvw
+    // 设置并排监看视窗的宽高比
+    private fun fitpvw(liveW: Int, liveH: Int) {
+        if (liveW > 0 && liveH > 0) {
+            pgmBox.setAspectRatio(liveW.toFloat() / liveH.toFloat())
         }
-        val lpPgm = pgmBox.layoutParams
-        if (lpPgm != null && lpPgm.height != targetH) {
-            lpPgm.height = targetH
-            pgmBox.layoutParams = lpPgm
+        if (stgW > 0 && stgH > 0) {
+            pvwBox.setAspectRatio(stgW.toFloat() / stgH.toFloat())
         }
     }
 
@@ -391,7 +382,7 @@ class MainAct : Activity() {
         }
     }
 
-    // 预监状态更新（仅刷新界面指示与 CUT 按钮，不打断正在进行的推流）
+    // 预监状态更新（刷新界面指示与 CUT 按钮，并即时同步预监画面比例与 GL 配置）
     private fun refrStaging(p: CamPipe) {
         val c = p.cfgnow()
         val curRot = if (Cfg.ROT < 0 && c[4] == p.rotdeg(p.curcam())) -1 else c[4]
@@ -417,7 +408,13 @@ class MainAct : Activity() {
             cutBtn.background = bgbox(false)
             cutBtn.text = "已同步"
         }
+
+        // 即时更新两路监视器的长宽比与 GL 渲染视口
         fitpvw(c[0], c[1])
+        if (p.isrun() && p.glready()) {
+            p.attachpvw(pvw.holder.surface, pvw.width, pvw.height, stgW, stgH)
+            p.attachpvw(pgm.holder.surface, pgm.width, pgm.height, c[0], c[1])
+        }
     }
 
     // 刷新状态、预览比例、分页样式与当前分页内容
@@ -468,8 +465,8 @@ class MainAct : Activity() {
         // 管线可能在重启后使监看失效，重新绑定两路 Surface
         if (p.isrun() && p.glready()) {
             try {
-                p.attachpvw(pvw.holder.surface, pvw.width, pvw.height)
-                p.attachpvw(pgm.holder.surface, pgm.width, pgm.height)
+                p.attachpvw(pvw.holder.surface, pvw.width, pvw.height, stgW, stgH)
+                p.attachpvw(pgm.holder.surface, pgm.width, pgm.height, c[0], c[1])
             } catch (_: Exception) {
             }
         }
