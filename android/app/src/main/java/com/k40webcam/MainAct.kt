@@ -3,6 +3,7 @@ package com.k40webcam
 import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.util.Log
@@ -13,6 +14,7 @@ import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.FrameLayout
@@ -25,11 +27,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import java.net.NetworkInterface
 
 /**
- * 主界面：上方自适应比例的监看预览，下方为分页。
- *
- * 分页划分（相机选择本身也是参数，不是独立列表页）：
- *  - 参数：相机、输出分辨率、旋转角度、码率、编码类型，全部为可自由调节的控件
- *  - 预设：把整套参数存为卡片，点击即应用
+ * 主界面：导播级双监视窗（左侧 PVW 预监，右侧 PGM 直播主输出）+ CUT 切换上屏 + 紧凑双列控制网格。
  *
  * 视觉严格遵循项目根目录 DESIGN.md：纯黑底、哑光橙描边、统一 6dp 圆角。
  */
@@ -42,22 +40,41 @@ class MainAct : Activity() {
         const val TAB_PAR = 0
         const val TAB_PST = 1
 
-        // 参数控件的可选项
-        val ROTS = listOf("自动（按传感器）", "0°", "90°", "180°", "270°")
-        val CODECS = listOf("H.265 / HEVC", "H.264 / AVC")
+        val ROTS = listOf("自动", "0°", "90°", "180°", "270°")
+        val CODECS = listOf("H.265", "H.264")
     }
 
     private var pipe: CamPipe? = null
     private var autoDone = false
     private var tab = TAB_PAR
 
+    // 双监看视窗：左侧 PVW (预监)，右侧 PGM (主输出/直播)
     private lateinit var pvwBox: AspectRatioFrameLayout
     private lateinit var pvw: SurfaceView
+    private lateinit var pvwSubTx: TextView
+
+    private lateinit var pgmBox: AspectRatioFrameLayout
+    private lateinit var pgm: SurfaceView
+    private lateinit var pgmSubTx: TextView
+
+    // 导播控制与状态条
     private lateinit var statusTx: TextView
+    private lateinit var cutHintTx: TextView
+    private lateinit var cutBtn: Button
+
     private lateinit var content: LinearLayout
     private lateinit var tabBtns: MutableList<TextView>
 
-    // 参数控件，切换分页时需保留状态
+    // 导播 Staging (预监) 参数状态
+    private var stgCam = Cfg.DEFCAM
+    private var stgW = Cfg.W
+    private var stgH = Cfg.H
+    private var stgRot = Cfg.ROT
+    private var stgCdc = 0
+    private var stgMbps = Cfg.BRATE / 1_000_000
+    private var stgInited = false
+
+    // 参数控件
     private var camSpin: Spinner? = null
     private var resSpin: Spinner? = null
     private var rotSpin: Spinner? = null
@@ -65,6 +82,28 @@ class MainAct : Activity() {
     private var brSeek: SeekBar? = null
     private var brTx: TextView? = null
     private var camIds: List<String> = emptyList()
+    private var suppressEvents = false
+
+    private fun <T> mkAdapter(items: List<T>): ArrayAdapter<T> {
+        return object : ArrayAdapter<T>(this, android.R.layout.simple_spinner_item, items) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val v = super.getView(position, convertView, parent) as TextView
+                v.setTextColor(cTx)
+                v.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                v.setPadding(dp(2), dp(4), dp(2), dp(4))
+                return v
+            }
+
+            override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val v = super.getDropDownView(position, convertView, parent) as TextView
+                v.setTextColor(cTx)
+                v.setBackgroundColor(cSurf)
+                v.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                v.setPadding(dp(12), dp(10), dp(12), dp(10))
+                return v
+            }
+        }
+    }
 
     private val cBg by lazy { getColor(R.color.bg) }
     private val cSurf by lazy { getColor(R.color.surface) }
@@ -73,8 +112,8 @@ class MainAct : Activity() {
     private val cTx by lazy { getColor(R.color.text) }
     private val cTx2 by lazy { getColor(R.color.text_2) }
     private val cTx3 by lazy { getColor(R.color.text_3) }
+    private val cPvwGreen = Color.parseColor("#388E3C")
 
-    // 界面初始化：保持常亮、构建控件、申请权限
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -87,7 +126,6 @@ class MainAct : Activity() {
         }
     }
 
-    // 权限回调
     override fun onRequestPermissionsResult(
         code: Int, perms: Array<out String>, results: IntArray
     ) {
@@ -98,23 +136,22 @@ class MainAct : Activity() {
         }
     }
 
-    // 界面销毁时不停止管线：管线由前台服务持有，需在后台持续推流
     override fun onDestroy() {
         super.onDestroy()
         pipe = null
     }
 
-    // dp 转像素
     private fun dp(v: Int): Int = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics
     ).toInt()
 
-    // 统一 6dp 圆角，激活态用强调色描边（DESIGN.md 第 5、6 节）
-    private fun bgbox(active: Boolean): GradientDrawable = GradientDrawable().apply {
-        cornerRadius = dp(6).toFloat()
-        setColor(cSurf)
-        setStroke(dp(if (active) 2 else 1), if (active) cAcc else cLine)
-    }
+    private fun bgbox(active: Boolean, customBorderColor: Int? = null): GradientDrawable =
+        GradientDrawable().apply {
+            cornerRadius = dp(6).toFloat()
+            setColor(cSurf)
+            val strokeColor = customBorderColor ?: if (active) cAcc else cLine
+            setStroke(dp(if (active) 2 else 1), strokeColor)
+        }
 
     // 构建整体界面
     private fun buildui(): LinearLayout {
@@ -123,10 +160,50 @@ class MainAct : Activity() {
             setBackgroundColor(cBg)
         }
 
-        // 监看预览：不经编码、不占网络，为最低开销的监看方式
-        // 预览区：直接使用 androidx.media3 的官方控件 AspectRatioFrameLayout
-        // 锁定视频比例，不自写比例逻辑；SurfaceView 填满它，
-        // 使其 Surface 比例与视频一致，从而不会被拉伸
+        // 1. 紧凑状态条：置顶显示地址与连接状态
+        statusTx = TextView(this).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(cTx2)
+            setPadding(dp(12), dp(8), dp(12), dp(4))
+        }
+        root.addView(statusTx)
+
+        // 2. 双监视窗：左侧 PVW (预监)，右侧 PGM (主输出/直播)
+        val monitorsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+        }
+
+        // --- 左侧 PVW 卡片 ---
+        val pvwCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = bgbox(false, cPvwGreen)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+        }
+        val pvwHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(4))
+        }
+        val pvwBadge = TextView(this).apply {
+            text = "PVW"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                cornerRadius = dp(3).toFloat()
+                setColor(cPvwGreen)
+            }
+            setPadding(dp(5), dp(1), dp(5), dp(1))
+        }
+        pvwHeader.addView(pvwBadge)
+        pvwSubTx = TextView(this).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(cTx3)
+            setPadding(dp(6), 0, 0, 0)
+        }
+        pvwHeader.addView(pvwSubTx)
+        pvwCard.addView(pvwHeader)
+
         pvwBox = AspectRatioFrameLayout(this).apply {
             setBackgroundColor(cBg)
             setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
@@ -138,7 +215,7 @@ class MainAct : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
-        root.addView(
+        pvwCard.addView(
             pvwBox,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -149,30 +226,106 @@ class MainAct : Activity() {
             override fun surfaceCreated(h: SurfaceHolder) = bindpvw(h, pvw.width, pvw.height)
             override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) = bindpvw(h, w, ht)
             override fun surfaceDestroyed(h: SurfaceHolder) {
-                pipe?.detachpvw()
+                pipe?.detachpvw(h.surface)
             }
         })
+        monitorsRow.addView(pvwCard, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
-        // 状态条
-        statusTx = TextView(this).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-            setTextColor(cTx2)
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+        // 间距
+        monitorsRow.addView(View(this), LinearLayout.LayoutParams(dp(8), ViewGroup.LayoutParams.MATCH_PARENT))
+
+        // --- 右侧 PGM 卡片 ---
+        val pgmCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = bgbox(true)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
         }
-        root.addView(statusTx)
+        val pgmHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(4))
+        }
+        val pgmBadge = TextView(this).apply {
+            text = "PGM"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(Color.BLACK)
+            background = GradientDrawable().apply {
+                cornerRadius = dp(3).toFloat()
+                setColor(cAcc)
+            }
+            setPadding(dp(5), dp(1), dp(5), dp(1))
+        }
+        pgmHeader.addView(pgmBadge)
+        pgmSubTx = TextView(this).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(cTx3)
+            setPadding(dp(6), 0, 0, 0)
+        }
+        pgmHeader.addView(pgmSubTx)
+        pgmCard.addView(pgmHeader)
 
-        // 分页标签
+        pgmBox = AspectRatioFrameLayout(this).apply {
+            setBackgroundColor(cBg)
+            setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT)
+        }
+        pgm = SurfaceView(this)
+        pgmBox.addView(
+            pgm,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        pgmCard.addView(
+            pgmBox,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { gravity = Gravity.CENTER_HORIZONTAL }
+        )
+        pgm.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(h: SurfaceHolder) = bindpvw(h, pgm.width, pgm.height)
+            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) = bindpvw(h, w, ht)
+            override fun surfaceDestroyed(h: SurfaceHolder) {
+                pipe?.detachpvw(h.surface)
+            }
+        })
+        monitorsRow.addView(pgmCard, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        root.addView(monitorsRow)
+
+        // 3. CUT 切换控制条：兼具导播切换与当前状态指示
+        val cutBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+        }
+        cutHintTx = TextView(this).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(cTx3)
+        }
+        cutBar.addView(cutHintTx, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        cutBtn = Button(this).apply {
+            text = "CUT"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setPadding(dp(12), 0, dp(12), 0)
+            setOnClickListener { execCut() }
+        }
+        cutBar.addView(cutBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)))
+        root.addView(cutBar)
+
+        // 4. 紧凑分页标签
         val tabBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(16), 0, dp(16), dp(8))
+            setPadding(dp(12), 0, dp(12), dp(4))
         }
         tabBtns = mutableListOf()
         for ((i, name) in listOf("参数", "预设").withIndex()) {
             val t = TextView(this).apply {
                 text = name
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
                 gravity = Gravity.CENTER
-                setPadding(dp(8), dp(12), dp(8), dp(12))
+                setPadding(dp(6), dp(8), dp(6), dp(8))
                 setOnClickListener { swtab(i) }
             }
             tabBtns.add(t)
@@ -180,10 +333,10 @@ class MainAct : Activity() {
         }
         root.addView(tabBar)
 
-        // 分页内容
+        // 5. 分页内容
         content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(24))
+            setPadding(dp(12), dp(4), dp(12), dp(16))
         }
         root.addView(
             ScrollView(this).apply { addView(content) },
@@ -193,34 +346,78 @@ class MainAct : Activity() {
         return root
     }
 
-    // 绑定预览输出到 GL，并告知 Surface 的实际尺寸
     private fun bindpvw(h: SurfaceHolder, w: Int, ht: Int) {
         pipe?.let { if (it.glready()) it.attachpvw(h.surface, w, ht) }
     }
 
-    // 设置预览宽高比：直接交给官方控件 AspectRatioFrameLayout 处理。
-    // 比例取自实际流解析度；不因旋转互换（旋转只改内容朝向，不改流的分辨率比例）。
-    // 同时限制预览最大高度为屏高 38%，确保竖屏流时不会占满屏幕遮挡下方参数与分页。
+    // 设置并排监看视窗的宽高比与高度限制
     private fun fitpvw(w: Int, h: Int) {
         if (w <= 0 || h <= 0) return
-        val ar = w.toFloat() / h.toFloat()
-        pvwBox.setAspectRatio(ar)
+        val arLive = w.toFloat() / h.toFloat()
+        val arStg = if (stgW > 0 && stgH > 0) stgW.toFloat() / stgH.toFloat() else arLive
+
+        pvwBox.setAspectRatio(arStg)
+        pgmBox.setAspectRatio(arLive)
+
         val screenW = resources.displayMetrics.widthPixels
-        val maxH = (resources.displayMetrics.heightPixels * 0.38f).toInt()
-        val targetH = (screenW / ar).toInt().coerceAtMost(maxH)
-        val lp = pvwBox.layoutParams
-        if (lp != null && lp.height != targetH) {
-            lp.height = targetH
-            pvwBox.layoutParams = lp
+        val maxH = (resources.displayMetrics.heightPixels * 0.28f).toInt()
+        val cardW = (screenW - dp(24) - dp(8)) / 2
+        val targetH = (cardW / arLive).toInt().coerceAtMost(maxH).coerceAtLeast(dp(90))
+
+        val lpPvw = pvwBox.layoutParams
+        if (lpPvw != null && lpPvw.height != targetH) {
+            lpPvw.height = targetH
+            pvwBox.layoutParams = lpPvw
+        }
+        val lpPgm = pgmBox.layoutParams
+        if (lpPgm != null && lpPgm.height != targetH) {
+            lpPgm.height = targetH
+            pgmBox.layoutParams = lpPgm
         }
     }
 
-    // 切换分页，带 180ms 淡入（DESIGN.md 7.5：允许简单过渡）
     private fun swtab(i: Int) {
         tab = i
         content.alpha = 0f
-        content.animate().alpha(1f).setDuration(180).start()
+        content.animate().alpha(1f).setDuration(160).start()
         refr()
+    }
+
+    // 执行 CUT 切换，将 PVW (Staged) 参数真正推送到 PGM (Live)
+    private fun execCut() {
+        val p = pipe ?: return
+        runjob {
+            p.reconf(stgCam, stgW, stgH, Cfg.FPS, stgMbps, stgRot, stgCdc)
+        }
+    }
+
+    // 预监状态更新（仅刷新界面指示与 CUT 按钮，不打断正在进行的推流）
+    private fun refrStaging(p: CamPipe) {
+        val c = p.cfgnow()
+        val curRot = if (Cfg.ROT < 0 && c[4] == p.rotdeg(p.curcam())) -1 else c[4]
+        val isStaged = (stgCam != p.curcam() || stgW != c[0] || stgH != c[1] ||
+                stgRot != curRot || stgMbps != c[3] || stgCdc != c[5])
+
+        pvwSubTx.text = "CAM$stgCam · ${stgW}×${stgH}"
+        pgmSubTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]}"
+
+        if (isStaged) {
+            cutHintTx.text = "预监已修改"
+            cutHintTx.setTextColor(cAcc)
+            cutBtn.setTextColor(Color.BLACK)
+            cutBtn.background = GradientDrawable().apply {
+                cornerRadius = dp(6).toFloat()
+                setColor(cAcc)
+            }
+            cutBtn.text = "CUT"
+        } else {
+            cutHintTx.text = "已同步"
+            cutHintTx.setTextColor(cTx3)
+            cutBtn.setTextColor(cTx3)
+            cutBtn.background = bgbox(false)
+            cutBtn.text = "已同步"
+        }
+        fitpvw(c[0], c[1])
     }
 
     // 刷新状态、预览比例、分页样式与当前分页内容
@@ -240,18 +437,21 @@ class MainAct : Activity() {
             }
         }
 
-        // 状态条
         val c = p.cfgnow()
-        statusTx.text = buildString {
-            append("rtsp://").append(getip()).append(':').append(Cfg.PORT).append('\n')
-            append(if (p.isrun()) "推流中" else "已停止")
-            append(" · CAM").append(p.curcam())
-            append(" · ").append(c[0]).append('x').append(c[1]).append('@').append(c[2])
-            append(" · ").append(c[3]).append("Mbps · ").append(if (c[5] == 0) "H.265" else "H.264")
+        if (!stgInited) {
+            stgInited = true
+            stgCam = p.curcam()
+            stgW = c[0]
+            stgH = c[1]
+            stgRot = Cfg.ROT
+            stgMbps = c[3]
+            stgCdc = c[5]
         }
 
-        // 预览尺寸：按有效画面比例等比装入可用区域
-        fitpvw(c[0], c[1])
+        // 状态条：仅展示核心 RTSP 地址与状态，不堆叠重复参数
+        statusTx.text = "rtsp://${getip()}:${Cfg.PORT} · ${if (p.isrun()) "推流中" else "已停止"}"
+
+        refrStaging(p)
 
         // 分页标签样式
         for ((i, t) in tabBtns.withIndex()) {
@@ -265,89 +465,176 @@ class MainAct : Activity() {
             TAB_PST -> mkpsttab(p)
         }
 
-        // 管线可能在重启后使预览失效，重新绑定
+        // 管线可能在重启后使监看失效，重新绑定两路 Surface
         if (p.isrun() && p.glready()) {
             try {
                 p.attachpvw(pvw.holder.surface, pvw.width, pvw.height)
+                p.attachpvw(pgm.holder.surface, pgm.width, pgm.height)
             } catch (_: Exception) {
             }
         }
     }
 
-    // 参数分页：相机、分辨率、旋转、码率、编码类型，全部可自由调节
+    // 参数分页：导播台紧凑双列网格排版
     private fun mkpartab(p: CamPipe) {
         val c = p.cfgnow()
+        suppressEvents = true
 
-        // ===== ① 信号源：决定画面的来源与采集尺寸 =====
-        content.addView(grp("① 信号源"))
-        content.addView(lbl("相机"))
+        // ===== 紧凑网格第 1 行：[相机选择] 与 [输出分辨率] =====
+        val row1 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, dp(6))
+        }
+
+        // 列 1：相机
+        val col1 = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        col1.addView(lbl("相机"))
         val cams = p.lstcams()
         camIds = cams.map { it.first }
-        val camNames = cams.map { it.second.substringBefore("|") }
+        val camNames = cams.map { "CAM${it.first}" }
         camSpin = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainAct, android.R.layout.simple_spinner_dropdown_item, camNames
-            )
-            val idx = camIds.indexOf(p.curcam())
+            adapter = mkAdapter(camNames)
+            val idx = camIds.indexOf(stgCam)
             if (idx >= 0) setSelection(idx)
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                    if (suppressEvents) return
+                    val sel = camIds.getOrNull(pos) ?: return
+                    if (sel != stgCam) {
+                        stgCam = sel
+                        refrStaging(p)
+                    }
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
         }
-        content.addView(camSpin, spinlp())
+        col1.addView(camSpin, spinlpCompact())
+        row1.addView(col1, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
-        // 输出分辨率：取当前相机支持的分辨率
-        content.addView(lbl("输出分辨率"))
+        // 列 2：分辨率
+        val col2 = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), 0, 0, 0)
+        }
+        col2.addView(lbl("分辨率"))
         val resList = try {
-            p.lstres(p.curcam())
+            p.lstres(stgCam).map { it.replace("x", "×") }
         } catch (_: Exception) {
-            listOf("${c[0]}x${c[1]}")
+            listOf("${stgW}×${stgH}")
         }
         resSpin = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainAct, android.R.layout.simple_spinner_dropdown_item, resList
-            )
-            val idx = resList.indexOf("${c[0]}x${c[1]}")
+            adapter = mkAdapter(resList)
+            val idx = resList.indexOf("${stgW}×${stgH}")
             if (idx >= 0) setSelection(idx)
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                    if (suppressEvents) return
+                    val s = resList.getOrNull(pos) ?: return
+                    val parts = s.split("×", "x")
+                    val w = parts.getOrNull(0)?.toIntOrNull() ?: stgW
+                    val h = parts.getOrNull(1)?.toIntOrNull() ?: stgH
+                    if (w != stgW || h != stgH) {
+                        stgW = w
+                        stgH = h
+                        refrStaging(p)
+                    }
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
         }
-        content.addView(resSpin, spinlp())
+        col2.addView(resSpin, spinlpCompact())
+        row1.addView(col2, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        content.addView(row1)
 
-        // ===== ② 几何校正：对采集到的画面做朝向变换 =====
-        content.addView(grp("② 几何校正"))
-        content.addView(lbl("旋转角度"))
+        // ===== 紧凑网格第 2 行：[旋转校正] 与 [编码格式] =====
+        val row2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, dp(6))
+        }
+
+        // 列 1：旋转
+        val col3 = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        col3.addView(lbl("旋转"))
         rotSpin = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainAct, android.R.layout.simple_spinner_dropdown_item, ROTS
-            )
-            val cur = if (Cfg.ROT < 0 && c[4] == 0) 0 else ROTS.indexOf("${c[4]}°")
+            adapter = mkAdapter(ROTS)
+            val cur = if (stgRot < 0) 0 else when (stgRot) {
+                0 -> 1
+                90 -> 2
+                180 -> 3
+                270 -> 4
+                else -> 0
+            }
             if (cur >= 0) setSelection(cur)
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                    if (suppressEvents) return
+                    val rot = listOf(-1, 0, 90, 180, 270).getOrElse(pos) { -1 }
+                    if (rot != stgRot) {
+                        stgRot = rot
+                        refrStaging(p)
+                    }
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
         }
-        content.addView(rotSpin, spinlp())
+        col3.addView(rotSpin, spinlpCompact())
+        row2.addView(col3, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
-        // ===== ③ 编码：决定码流格式与质量 =====
-        content.addView(grp("③ 编码"))
-        content.addView(lbl("编码类型"))
+        // 列 2：编码类型
+        val col4 = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), 0, 0, 0)
+        }
+        col4.addView(lbl("编码"))
         cdcSpin = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainAct, android.R.layout.simple_spinner_dropdown_item, CODECS
-            )
-            setSelection(c[5].coerceIn(0, 1))
+            adapter = mkAdapter(CODECS)
+            setSelection(stgCdc.coerceIn(0, 1))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                    if (suppressEvents) return
+                    if (pos != stgCdc) {
+                        stgCdc = pos
+                        refrStaging(p)
+                    }
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
         }
-        content.addView(cdcSpin, spinlp())
+        col4.addView(cdcSpin, spinlpCompact())
+        row2.addView(col4, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        content.addView(row2)
 
-        // 码率：连续可调，不是固定档位
-        content.addView(lbl("码率"))
+        suppressEvents = false
+
+        // ===== 紧凑网格第 3 行：[码率调节] =====
+        val brHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(4), 0, dp(2))
+        }
+        brHeader.addView(lbl("码率"), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         brTx = TextView(this).apply {
-            text = "${c[3]} Mbps"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            text = "$stgMbps Mbps"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             setTextColor(cAcc)
         }
-        content.addView(brTx)
+        brHeader.addView(brTx)
+        content.addView(brHeader)
+
         brSeek = SeekBar(this).apply {
             max = 49
-            progress = (c[3] - 1).coerceIn(0, 49)
+            progress = (stgMbps - 1).coerceIn(0, 49)
+            setPadding(dp(4), dp(6), dp(4), dp(6))
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, v: Int, fromUser: Boolean) {
-                    brTx?.text = "${v + 1} Mbps"
+                    stgMbps = v + 1
+                    brTx?.text = "$stgMbps Mbps"
+                    if (fromUser) refrStaging(p)
                 }
-
                 override fun onStartTrackingTouch(sb: SeekBar?) {}
                 override fun onStopTrackingTouch(sb: SeekBar?) {}
             })
@@ -355,70 +642,58 @@ class MainAct : Activity() {
         content.addView(brSeek, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
-        content.addView(TextView(this).apply {
-            text = "1 Mbps ————————— 50 Mbps"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setTextColor(cTx3)
-        })
-
-        // 应用：重建管线使全部参数生效
-        content.addView(mkbtn("应用参数", true) {
-            val cid = camIds.getOrNull(camSpin?.selectedItemPosition ?: 0) ?: p.curcam()
-            val res = resSpin?.selectedItem?.toString() ?: "${c[0]}x${c[1]}"
-            val parts = res.split("x")
-            val w = parts.getOrNull(0)?.toIntOrNull() ?: c[0]
-            val h = parts.getOrNull(1)?.toIntOrNull() ?: c[1]
-            val rotSel = rotSpin?.selectedItemPosition ?: 0
-            val rot = if (rotSel == 0) -1 else listOf(0, 0, 90, 180, 270)[rotSel]
-            val mbps = (brSeek?.progress ?: 24) + 1
-            val cdc = cdcSpin?.selectedItemPosition ?: 0
-            runjob { p.reconf(cid, w, h, Cfg.FPS, mbps, rot, cdc) }
-        })
     }
 
-    // 预设分页：卡片形式，点击即应用整套参数
+    // 预设分页
     private fun mkpsttab(p: CamPipe) {
-        content.addView(mkbtn("把当前设定存为预设", false) { savepst(p) })
+        content.addView(mkbtn("保存当前预设", false) { savepst(p) })
 
         val list = PstStore.lst(this)
         if (list.isEmpty()) {
             content.addView(TextView(this).apply {
-                text = "暂无预设。在「参数」页调好后点上方按钮保存。"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                text = "暂无预设。在「参数」页调整后保存。"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
                 setTextColor(cTx3)
-                setPadding(0, dp(16), 0, 0)
+                setPadding(0, dp(12), 0, 0)
             })
             return
         }
 
         val c = p.cfgnow()
-        content.addView(lbl("预设"))
+        content.addView(lbl("已存预设"))
         for (ps in list) {
             val active = ps.camId == p.curcam() && ps.w == c[0] && ps.h == c[1] &&
                     ps.mbps == c[3] && ps.cdc == c[5]
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 background = bgbox(active)
-                setPadding(dp(12), dp(14), dp(12), dp(14))
+                setPadding(dp(10), dp(10), dp(10), dp(10))
                 setOnClickListener {
-                    runjob { p.reconf(ps.camId, ps.w, ps.h, ps.fps, ps.mbps, ps.rot, ps.cdc) }
+                    stgCam = ps.camId
+                    stgW = ps.w
+                    stgH = ps.h
+                    stgMbps = ps.mbps
+                    stgRot = ps.rot
+                    stgCdc = ps.cdc
+                    execCut()
                 }
             }
             card.addView(TextView(this).apply {
                 text = ps.name
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
                 setTextColor(cTx)
             })
+            val cdcName = if (ps.cdc == 0) "H.265" else "H.264"
             card.addView(TextView(this).apply {
-                text = "CAM${ps.camId} · ${ps.summ()}"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                text = "CAM${ps.camId} · ${ps.w}×${ps.h} · ${ps.mbps}Mbps · $cdcName"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                 setTextColor(cTx3)
             })
             card.addView(TextView(this).apply {
                 text = "删除"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                 setTextColor(cTx2)
-                setPadding(0, dp(8), 0, 0)
+                setPadding(0, dp(6), 0, 0)
                 setOnClickListener {
                     PstStore.del(this@MainAct, ps.name)
                     refr()
@@ -426,52 +701,40 @@ class MainAct : Activity() {
             })
             content.addView(card, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(12) })
+            ).apply { bottomMargin = dp(8) })
         }
     }
 
-    // 把当前设定存为预设，名称取参数摘要
+    // 把当前设定存为预设
     private fun savepst(p: CamPipe) {
-        val c = p.cfgnow()
-        val name = "CAM${p.curcam()} ${c[0]}x${c[1]} ${c[3]}M ${if (c[5] == 0) "H265" else "H264"}"
-        PstStore.put(this, Preset(name, p.curcam(), c[0], c[1], c[2], c[3], c[4], c[5]))
+        val cdcName = if (stgCdc == 0) "H.265" else "H.264"
+        val name = "CAM${stgCam} · ${stgW}×${stgH} · ${stgMbps}Mbps · $cdcName"
+        PstStore.put(this, Preset(name, stgCam, stgW, stgH, Cfg.FPS, stgMbps, stgRot, stgCdc))
         refr()
     }
 
-    // 下拉控件的统一布局参数
-    private fun spinlp(): LinearLayout.LayoutParams = LinearLayout.LayoutParams(
+    private fun spinlpCompact(): LinearLayout.LayoutParams = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-    ).apply { bottomMargin = dp(16) }
+    ).apply { bottomMargin = dp(4) }
 
-    // 信号链分组标题：比字段标签更醒目，用于标出处理阶段
-    private fun grp(s: String): TextView = TextView(this).apply {
-        text = s
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-        setTextColor(cTx2)
-        setPadding(0, dp(20), 0, dp(4))
-    }
-
-    // 字段标签
     private fun lbl(s: String): TextView = TextView(this).apply {
         text = s
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
         setTextColor(cTx3)
-        setPadding(0, dp(8), 0, dp(8))
+        setPadding(0, dp(4), 0, dp(4))
     }
 
-    // 统一样式按钮：主操作用强调色描边
     private fun mkbtn(s: String, primary: Boolean, f: () -> Unit): Button = Button(this).apply {
         text = s
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         setTextColor(if (primary) cAcc else cTx)
         background = bgbox(primary)
         setOnClickListener { f() }
         layoutParams = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(20) }
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(40)
+        ).apply { topMargin = dp(12) }
     }
 
-    // 在后台线程执行管线操作，完成后回主线程刷新
     private fun runjob(f: () -> Unit) {
         statusTx.text = "处理中…"
         Thread {
@@ -484,16 +747,21 @@ class MainAct : Activity() {
         }.start()
     }
 
-    // 取本机第一个非回环 IPv4 地址
     private fun getip(): String {
-        return try {
-            NetworkInterface.getNetworkInterfaces().toList()
-                .filter { it.isUp && !it.isLoopback }
-                .flatMap { it.inetAddresses.toList() }
-                .firstOrNull { !it.isLoopbackAddress && it.hostAddress?.contains(':') == false }
-                ?.hostAddress ?: "0.0.0.0"
-        } catch (e: Exception) {
-            "0.0.0.0"
+        try {
+            val ifs = NetworkInterface.getNetworkInterfaces() ?: return "0.0.0.0"
+            for (itf in ifs) {
+                if (!itf.isUp || itf.isLoopback) continue
+                val addrs = itf.inetAddresses ?: continue
+                for (a in addrs) {
+                    if (a.isLoopbackAddress) continue
+                    val h = a.hostAddress ?: continue
+                    if (h.contains(':')) continue
+                    return h
+                }
+            }
+        } catch (_: Exception) {
         }
+        return "0.0.0.0"
     }
 }

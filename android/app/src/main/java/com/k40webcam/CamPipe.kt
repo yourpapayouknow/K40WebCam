@@ -17,8 +17,10 @@ import com.pedro.encoder.video.FormatVideoEncoder
 import com.pedro.encoder.video.GetVideoData
 import com.pedro.encoder.video.VideoEncoder
 import com.pedro.library.view.GlStreamInterface
+import com.pedro.library.view.preview.MultiPreviewConfig
 import com.pedro.rtspserver.server.RtspServer
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 相机管线：Camera2 取景 → GL 旋转/送帧 → MediaCodec 硬编 → RTSP 分发。
@@ -99,6 +101,8 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     private var recovering = false
 
     private var camId = "0"
+    // 已注册的监看 Surface 列表，支持同时向 PVW 和 PGM 渲染帧
+    private val pvwSurfaces = ConcurrentHashMap<Surface, Pair<Int, Int>>()
 
     // 运行时配置：分辨率/帧率/码率/旋转角均可独立调节，初值取自 Cfg
     @Volatile
@@ -168,6 +172,15 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         // 用 setRotation（内部作用到相机纹理）而非 setStreamRotation：
         // 本机相机输出本身即为旋转状态，需在纹理采样阶段校正
         gl.setRotation(rotdeg(id))
+        pvwSurfaces.forEach { (s, sz) ->
+            try {
+                gl.addMultiPreviewSurface(
+                    s, MultiPreviewConfig(width = sz.first, height = sz.second, isPortrait = isPortrait)
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "恢复监看 Surface 失败: ${e.message}")
+            }
+        }
 
         // 此处不启动 RTSP：须等编码器输出 CSD，见 onVideoInfo
         rtsp.setVideoCodec(vcodec)
@@ -244,28 +257,37 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     // 当前码率（Mbps）
     fun curbrate(): Int = vbrate / 1_000_000
 
-    // 绑定界面预览输出：相机画面经 GL 额外渲染一份到此 Surface，
-    // 不经编码、不占网络，为最低开销的监看方式。
-    // 预览分辨率必须等于 Surface 实际尺寸，否则 GL 视口与实际缓冲不一致，
-    // 画面会被裁剪放大（只看到局部）。
+    // 绑定界面监看输出（支持同时向 PVW 与 PGM 两个 Surface 渲染）：
+    // 相机画面经 GL 额外渲染一份到此 Surface，不经编码、不占网络。
     fun attachpvw(surface: Surface, sw: Int, sh: Int) {
         try {
-            gl.setIsPortrait(vw < vh)
-            if (sw > 0 && sh > 0) gl.setPreviewResolution(sw, sh)
-            gl.attachPreview(surface)
-            Log.i(TAG, "预览已绑定")
+            pvwSurfaces[surface] = Pair(sw, sh)
+            if (gl.isRunning && sw > 0 && sh > 0) {
+                val isPortrait = vw < vh
+                gl.setIsPortrait(isPortrait)
+                val cfg = MultiPreviewConfig(
+                    width = sw,
+                    height = sh,
+                    isPortrait = isPortrait
+                )
+                gl.addMultiPreviewSurface(surface, cfg)
+                Log.i(TAG, "监看 Surface 已绑定: ${sw}x${sh} 竖屏=$isPortrait")
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "预览绑定失败: ${e.message}")
+            Log.w(TAG, "监看绑定失败: ${e.message}")
         }
     }
 
-    // 解绑预览输出
-    fun detachpvw() {
+    // 解绑监看输出
+    fun detachpvw(surface: Surface) {
         try {
-            gl.deAttachPreview()
-            Log.i(TAG, "预览已解绑")
+            pvwSurfaces.remove(surface)
+            if (gl.isRunning) {
+                gl.removeMultiPreviewSurface(surface)
+                Log.i(TAG, "监看 Surface 已解绑")
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "预览解绑失败: ${e.message}")
+            Log.w(TAG, "监看解绑失败: ${e.message}")
         }
     }
 
@@ -295,6 +317,9 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         srvUp = false
         cmgr.closeCamera(true)
         gl.removeMediaCodecSurface()
+        try {
+            gl.removeAllMultiPreviewSurfaces()
+        } catch (_: Exception) {}
         // 停掉 GL 线程：其 SurfaceTexture 在下次 start() 时会重建，
         // 若不停，重启后相机会仍绑在旧的 SurfaceTexture 上
         gl.stop()

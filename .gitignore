@@ -6,3 +6,6 @@
 # 本机 Claude 启动脚本（含本机地址，不入库）
 claude_auto.command
 claude_glm.command
+
+# 测试截图不入库
+*.png
