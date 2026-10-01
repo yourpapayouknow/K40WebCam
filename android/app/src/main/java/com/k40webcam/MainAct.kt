@@ -140,8 +140,10 @@ class MainAct : Activity() {
         )
         root.addView(
             pvwBox,
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT)
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { gravity = Gravity.CENTER_HORIZONTAL }
         )
         pvw.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(h: SurfaceHolder) = bindpvw(h, pvw.width, pvw.height)
@@ -198,9 +200,19 @@ class MainAct : Activity() {
 
     // 设置预览宽高比：直接交给官方控件 AspectRatioFrameLayout 处理。
     // 比例取自实际流解析度；不因旋转互换（旋转只改内容朝向，不改流的分辨率比例）。
+    // 同时限制预览最大高度为屏高 38%，确保竖屏流时不会占满屏幕遮挡下方参数与分页。
     private fun fitpvw(w: Int, h: Int) {
         if (w <= 0 || h <= 0) return
-        pvwBox.setAspectRatio(w.toFloat() / h.toFloat())
+        val ar = w.toFloat() / h.toFloat()
+        pvwBox.setAspectRatio(ar)
+        val screenW = resources.displayMetrics.widthPixels
+        val maxH = (resources.displayMetrics.heightPixels * 0.38f).toInt()
+        val targetH = (screenW / ar).toInt().coerceAtMost(maxH)
+        val lp = pvwBox.layoutParams
+        if (lp != null && lp.height != targetH) {
+            lp.height = targetH
+            pvwBox.layoutParams = lp
+        }
     }
 
     // 切换分页，带 180ms 淡入（DESIGN.md 7.5：允许简单过渡）

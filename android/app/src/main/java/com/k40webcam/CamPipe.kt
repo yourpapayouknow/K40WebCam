@@ -143,10 +143,12 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         }
         venc.start()
 
-        // GL 桥接：设定输出尺寸后启动。
+        // GL 桥接：设定输出尺寸与横竖屏模式后启动。
         // 注意：GlStreamInterface 的 SurfaceTexture 在 start() 的异步任务中创建，
         // 必须等 isRunning 为真后再取用，否则拿到 null。此方法应在后台线程调用。
+        val isPortrait = vw < vh
         gl.setEncoderSize(vw, vh)
+        gl.setIsPortrait(isPortrait)
         gl.start()
         var waited = 0
         while (!gl.isRunning && waited < 3000) {
@@ -179,7 +181,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         cmgr.openCameraId(id)
 
         running = true
-        Log.i(TAG, "管线已启动: 相机=$id 旋转=${rotdeg(id)}° 端口=$port（等待参数集）")
+        Log.i(TAG, "管线已启动: 相机=$id 旋转=${rotdeg(id)}° 竖屏=$isPortrait 端口=$port（等待参数集）")
         return true
     }
 
@@ -193,7 +195,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         cmgr.prepareCamera(gl.surfaceTexture, vw, vh, vfps)
         cmgr.setCameraId(id)
         cmgr.openCameraId(id)
-        gl.setStreamRotation(rot)
+        gl.setRotation(rot)
         venc.requestKeyframe()
         Log.i(TAG, "已切换到相机 $id，旋转=$rot°")
     }
@@ -248,6 +250,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     // 画面会被裁剪放大（只看到局部）。
     fun attachpvw(surface: Surface, sw: Int, sh: Int) {
         try {
+            gl.setIsPortrait(vw < vh)
             if (sw > 0 && sh > 0) gl.setPreviewResolution(sw, sh)
             gl.attachPreview(surface)
             Log.i(TAG, "预览已绑定")
