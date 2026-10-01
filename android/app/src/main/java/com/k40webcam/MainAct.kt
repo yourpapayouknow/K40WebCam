@@ -217,6 +217,7 @@ class MainAct : Activity() {
         // 2. 监看视窗
         monitorCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
             background = bgbox(true, cLine)
             setPadding(dp(8), dp(6), dp(8), dp(8))
         }
@@ -231,7 +232,9 @@ class MainAct : Activity() {
             setPadding(dp(4), 0, 0, 0)
         }
         monitorHeader.addView(modeSubTx, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        monitorCard.addView(monitorHeader)
+        monitorCard.addView(monitorHeader, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
 
         val monitorH = (resources.displayMetrics.heightPixels * 0.38f).toInt()
 
@@ -243,7 +246,7 @@ class MainAct : Activity() {
         monitorBox.addView(
             monitorSurface,
             FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER
             )
         )
         monitorCard.addView(
@@ -251,7 +254,7 @@ class MainAct : Activity() {
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 monitorH
-            ).apply { gravity = Gravity.CENTER }
+            ).apply { gravity = Gravity.CENTER_HORIZONTAL }
         )
         monitorSurface.holder.addCallback(object : SurfaceHolder.Callback {
             override fun surfaceCreated(h: SurfaceHolder) = bindpvw(h, monitorSurface.width, monitorSurface.height)
@@ -304,8 +307,8 @@ class MainAct : Activity() {
     // 绑定监看输出并调整视窗比例
     private fun bindpvw(h: SurfaceHolder, w: Int, ht: Int) {
         val c = pipe?.cfgnow() ?: intArrayOf(Cfg.W, Cfg.H)
-        pipe?.let { if (it.glready()) it.attachpvw(h.surface, w, ht) }
         fitpvw(c[0], c[1])
+        pipe?.let { if (it.glready()) it.attachpvw(h.surface, w, ht) }
     }
 
     // 设置监看视窗宽高比：仅当比例发生实质性变化时才更新布局，同比例免刷新
@@ -317,7 +320,7 @@ class MainAct : Activity() {
         }
         lastAr = ar
         monitorBox.setAspectRatio(ar)
-        val screenW = resources.displayMetrics.widthPixels
+        val screenW = resources.displayMetrics.widthPixels - dp(40)
         val maxH = (resources.displayMetrics.heightPixels * 0.38f).toInt()
         val targetH = (screenW / ar).toInt().coerceAtMost(maxH)
         val lp = monitorBox.layoutParams
@@ -325,6 +328,11 @@ class MainAct : Activity() {
             lp.height = targetH
             monitorBox.layoutParams = lp
         }
+
+        val scale = 960f / maxOf(w, h)
+        val pw = ((w * scale) / 2).toInt() * 2
+        val ph = ((h * scale) / 2).toInt() * 2
+        monitorSurface.holder.setFixedSize(pw, ph)
     }
 
     private fun swtab(i: Int) {

@@ -243,13 +243,14 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         }
     }
 
-    // 绑定界面监看输出：采用轻量分辨率，降低发热与功耗
+    // 绑定界面监看输出：采用等比例轻量分辨率，降低发热与功耗
     fun attachpvw(surface: Surface, sw: Int, sh: Int) {
         try {
             val isPortrait = vw < vh
             gl.setIsPortrait(isPortrait)
-            val pw = if (isPortrait) 540 else 960
-            val ph = if (isPortrait) 960 else 540
+            val scale = 960f / maxOf(vw, vh)
+            val pw = ((vw * scale) / 2).toInt() * 2
+            val ph = ((vh * scale) / 2).toInt() * 2
             gl.setPreviewResolution(pw, ph)
             gl.attachPreview(surface)
             Log.i(TAG, "监看已绑定，轻量尺寸: ${pw}x${ph}")
