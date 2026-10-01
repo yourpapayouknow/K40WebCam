@@ -16,14 +16,10 @@ import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.video.FormatVideoEncoder
 import com.pedro.encoder.video.GetVideoData
 import com.pedro.encoder.video.VideoEncoder
-import com.pedro.encoder.utils.ViewPort
-import com.pedro.encoder.utils.gl.AspectRatioMode
-import com.pedro.encoder.utils.gl.SizeCalculator
 import com.pedro.library.view.GlStreamInterface
-import com.pedro.library.view.preview.MultiPreviewConfig
 import com.pedro.rtspserver.server.RtspServer
 import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentHashMap
+
 
 /**
  * 相机管线：Camera2 取景 → GL 旋转/送帧 → MediaCodec 硬编 → RTSP 分发。
@@ -104,8 +100,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     private var recovering = false
 
     private var camId = "0"
-    // 已注册的监看 Surface 列表，支持同时向 PVW 和 PGM 渲染帧
-    private val pvwSurfaces = ConcurrentHashMap<Surface, Pair<Int, Int>>()
+
 
     // 运行时配置：分辨率/帧率/码率/旋转角均可独立调节，初值取自 Cfg
     @Volatile
@@ -175,15 +170,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         // 用 setRotation（内部作用到相机纹理）而非 setStreamRotation：
         // 本机相机输出本身即为旋转状态，需在纹理采样阶段校正
         gl.setRotation(rotdeg(id))
-        pvwSurfaces.forEach { (s, sz) ->
-            try {
-                gl.addMultiPreviewSurface(
-                    s, MultiPreviewConfig(width = sz.first, height = sz.second, isPortrait = isPortrait)
-                )
-            } catch (e: Exception) {
-                Log.w(TAG, "恢复监看 Surface 失败: ${e.message}")
-            }
-        }
+
 
         // 此处不启动 RTSP：须等编码器输出 CSD，见 onVideoInfo
         rtsp.setVideoCodec(vcodec)
@@ -259,47 +246,6 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     // 当前码率（Mbps）
     fun curbrate(): Int = vbrate / 1_000_000
 
-    // 绑定或更新界面监看输出：确保几何比例严格等比呈现，杜绝拉伸变形
-    fun attachpvw(surface: Surface, sw: Int, sh: Int, targetW: Int = 0, targetH: Int = 0) {
-        try {
-            pvwSurfaces[surface] = Pair(sw, sh)
-            if (gl.isRunning && sw > 0 && sh > 0) {
-                val tw = if (targetW > 0) targetW else vw
-                val th = if (targetH > 0) targetH else vh
-                val isPortrait = vw < vh
-                val vp = SizeCalculator.calculateViewPort(AspectRatioMode.Fill, sw, sh, vw, vh)
-                val cfg = MultiPreviewConfig(
-                    width = sw,
-                    height = sh,
-                    isPortrait = isPortrait,
-                    aspectRatioMode = AspectRatioMode.Fill,
-                    viewPort = vp
-                )
-                if (gl.hasMultiPreviewSurface(surface)) {
-                    gl.updateMultiPreviewConfig(surface, cfg)
-                    Log.i(TAG, "监看 Surface 已更新配置: ${sw}x${sh} 目标=${tw}x${th} vp=$vp 竖屏=$isPortrait")
-                } else {
-                    gl.addMultiPreviewSurface(surface, cfg)
-                    Log.i(TAG, "监看 Surface 已初始绑定: ${sw}x${sh} 目标=${tw}x${th} vp=$vp 竖屏=$isPortrait")
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "监看配置失败: ${e.message}")
-        }
-    }
-
-    // 解绑监看输出
-    fun detachpvw(surface: Surface) {
-        try {
-            pvwSurfaces.remove(surface)
-            if (gl.isRunning) {
-                gl.removeMultiPreviewSurface(surface)
-                Log.i(TAG, "监看 Surface 已解绑")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "监看解绑失败: ${e.message}")
-        }
-    }
 
     // 预览是否随管线就绪（供界面决定是否已可绑定）
     fun glready(): Boolean = gl.isRunning

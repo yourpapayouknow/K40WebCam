@@ -220,12 +220,11 @@ class MainAct : Activity() {
             ).apply { gravity = Gravity.CENTER }
         )
         monitorSurface.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(h: SurfaceHolder) = bindMonitor(h, monitorSurface.width, monitorSurface.height)
-            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) = bindMonitor(h, w, ht)
-            override fun surfaceDestroyed(h: SurfaceHolder) {
-                pipe?.detachpvw(h.surface)
-            }
+            override fun surfaceCreated(h: SurfaceHolder) {}
+            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) {}
+            override fun surfaceDestroyed(h: SurfaceHolder) {}
         })
+
 
         val monitorContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -285,13 +284,6 @@ class MainAct : Activity() {
         )
 
         return root
-    }
-
-    private fun bindMonitor(h: SurfaceHolder, w: Int, ht: Int) {
-        val c = pipe?.cfgnow() ?: intArrayOf(Cfg.W, Cfg.H)
-        val targetW = if (showingPvw) stgW else c[0]
-        val targetH = if (showingPvw) stgH else c[1]
-        pipe?.let { if (it.glready()) it.attachpvw(h.surface, w, ht, targetW, targetH) }
     }
 
     // 设置监看视窗的宽高比
@@ -369,9 +361,7 @@ class MainAct : Activity() {
         }
 
         fitMonitor(targetW, targetH)
-        if (p.isrun() && p.glready()) {
-            p.attachpvw(monitorSurface.holder.surface, monitorSurface.width, monitorSurface.height, targetW, targetH)
-        }
+
     }
 
     // 刷新状态、预览比例、分页样式与当前分页内容
@@ -419,15 +409,7 @@ class MainAct : Activity() {
             TAB_PST -> mkpsttab(p)
         }
 
-        // 管线可能在重启后使监看失效，重新绑定监看 Surface
-        if (p.isrun() && p.glready()) {
-            try {
-                val targetW = if (showingPvw) stgW else c[0]
-                val targetH = if (showingPvw) stgH else c[1]
-                p.attachpvw(monitorSurface.holder.surface, monitorSurface.width, monitorSurface.height, targetW, targetH)
-            } catch (_: Exception) {
-            }
-        }
+
     }
 
     // 参数分页：导播台紧凑双列网格排版
