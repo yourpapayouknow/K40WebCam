@@ -16,7 +16,7 @@ object Cfg {
     const val BRATE = 25_000_000
 
     // 关键帧间隔（秒），影响切换速度与首帧延迟
-    const val IFRM = 2
+    const val IFRM = 1
 
     // RTSP 服务端口（554 需 root 绑定，故用 8554）
     const val PORT = 8554
