@@ -16,10 +16,7 @@ import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.video.FormatVideoEncoder
 import com.pedro.encoder.video.GetVideoData
 import com.pedro.encoder.video.VideoEncoder
-import android.util.Size
-import com.pedro.encoder.utils.ViewPort
 import com.pedro.encoder.utils.gl.AspectRatioMode
-import com.pedro.encoder.utils.gl.SizeCalculator
 import com.pedro.library.view.GlStreamInterface
 import com.pedro.library.view.preview.MultiPreviewConfig
 import com.pedro.rtspserver.server.RtspServer
@@ -193,10 +190,8 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         rtsp.setOnlyVideo(true)
 
         cmgr.setCameraCallbacks(camCb)
-        // 物理相机以传感器全画幅尺寸采集，保留最完整物理视野，解耦直播编码与预监视口
-        val sensorSize = getSensorResolution(id)
-        Log.i(TAG, "物理相机以全画幅尺寸采集: ${sensorSize.width}x${sensorSize.height}")
-        cmgr.prepareCamera(gl.surfaceTexture, sensorSize.width, sensorSize.height, vfps)
+        // 相机输出与编码器尺寸匹配，保证比例严格一致，杜绝任何画面拉伸变形
+        cmgr.prepareCamera(gl.surfaceTexture, vw, vh, vfps)
         cmgr.openCameraId(id)
 
         running = true
@@ -210,8 +205,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         camId = id
         val rot = rotdeg(id)
         cmgr.closeCamera(false)
-        val s = getSensorResolution(id)
-        cmgr.prepareCamera(gl.surfaceTexture, s.width, s.height, vfps)
+        cmgr.prepareCamera(gl.surfaceTexture, vw, vh, vfps)
         cmgr.setCameraId(id)
         cmgr.openCameraId(id)
         gl.setRotation(rot)
@@ -232,8 +226,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
                     val id = camId
                     Log.i(TAG, "尝试恢复相机 $id（第 $i 次）")
                     cmgr.closeCamera(false)
-                    val s = getSensorResolution(id)
-                    cmgr.prepareCamera(gl.surfaceTexture, s.width, s.height, vfps)
+                    cmgr.prepareCamera(gl.surfaceTexture, vw, vh, vfps)
                     cmgr.setCameraId(id)
                     cmgr.openCameraId(id)
                     venc.requestKeyframe()
@@ -246,21 +239,6 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
             recovering = false
             Log.i(TAG, if (ok) "相机已恢复" else "相机恢复失败，管线保持待机")
         }.start()
-    }
-
-    // 取物理全画幅尺寸：优先选取 4:3 满传感器比例，保留完整视场角，供多比例解耦裁剪
-    private fun getSensorResolution(id: String): Size {
-        return try {
-            val resList = cmgr.getCameraResolutions(id)
-            val fourThree = resList.filter {
-                val maxDim = maxOf(it.width, it.height)
-                val minDim = minOf(it.width, it.height)
-                Math.abs((maxDim.toFloat() / minDim.toFloat()) - (4f / 3f)) < 0.05f
-            }.maxByOrNull { it.width * it.height }
-            fourThree ?: resList.maxByOrNull { it.width * it.height } ?: Size(vw, vh)
-        } catch (e: Exception) {
-            Size(vw, vh)
-        }
     }
 
     // 运行时调整码率（对流的有限调节之一），立即生效无需重启管线
@@ -279,7 +257,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     // 当前码率（Mbps）
     fun curbrate(): Int = vbrate / 1_000_000
 
-    // 绑定或更新界面监看输出：根据目标分辨率独立计算专属 ViewPort，解耦预监与主路推流
+    // 绑定或更新界面监看输出：确保几何比例严格等比呈现，杜绝拉伸变形
     fun attachpvw(surface: Surface, sw: Int, sh: Int, targetW: Int = 0, targetH: Int = 0) {
         try {
             pvwSurfaces[surface] = Pair(sw, sh)
@@ -287,21 +265,19 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
                 val tw = if (targetW > 0) targetW else vw
                 val th = if (targetH > 0) targetH else vh
                 val isPortrait = tw < th
-                // 显式根据预监目标长宽比计算 ViewPort，覆盖底层默认依附主路宽高的行为
-                val vp = SizeCalculator.calculateViewPort(AspectRatioMode.Adjust, sw, sh, tw, th)
                 val cfg = MultiPreviewConfig(
                     width = sw,
                     height = sh,
                     isPortrait = isPortrait,
                     aspectRatioMode = AspectRatioMode.Adjust,
-                    viewPort = vp
+                    viewPort = null
                 )
                 if (gl.hasMultiPreviewSurface(surface)) {
                     gl.updateMultiPreviewConfig(surface, cfg)
-                    Log.i(TAG, "监看 Surface 已更新配置: ${sw}x${sh} 目标=${tw}x${th} 视口=$vp 竖屏=$isPortrait")
+                    Log.i(TAG, "监看 Surface 已更新配置: ${sw}x${sh} 目标=${tw}x${th} 竖屏=$isPortrait")
                 } else {
                     gl.addMultiPreviewSurface(surface, cfg)
-                    Log.i(TAG, "监看 Surface 已初始绑定: ${sw}x${sh} 目标=${tw}x${th} 视口=$vp 竖屏=$isPortrait")
+                    Log.i(TAG, "监看 Surface 已初始绑定: ${sw}x${sh} 目标=${tw}x${th} 竖屏=$isPortrait")
                 }
             }
         } catch (e: Exception) {
