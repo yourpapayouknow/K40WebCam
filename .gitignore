@@ -9,3 +9,6 @@ claude_glm.command
 
 # 测试截图不入库
 *.png
+
+# CodeGraph 索引目录
+.codegraph/
