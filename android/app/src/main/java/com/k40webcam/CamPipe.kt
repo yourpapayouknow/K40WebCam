@@ -95,12 +95,14 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         rtsp.setClientListener(object : ClientListener {
             override fun onClientConnected(client: ServerClient) {
                 try {
-                    client.resizeCache(2)
+                    client.resizeCache(1)
+                    client.clearCache()
                 } catch (e: Exception) {
                     Log.w(TAG, "客户端队列调整失败: ${e.message}")
                 }
                 venc.requestKeyframe()
-                Log.i(TAG, "客户端已连接，已重设缓冲队列为2并请求关键帧")
+                injectLowLatencyParams()
+                Log.i(TAG, "客户端已连接，已重设缓冲队列为1并清空缓存并请求关键帧")
             }
 
             override fun onClientDisconnected(client: ServerClient) {
@@ -110,6 +112,24 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
             override fun onClientNewBitrate(bitrate: Long, client: ServerClient) {}
             override fun onClientStreamingStats(report: StreamingStatsReport, client: ServerClient) {}
         })
+    }
+
+    private fun injectLowLatencyParams() {
+        try {
+            val codecField = com.pedro.encoder.BaseEncoder::class.java.getDeclaredField("codec")
+            codecField.isAccessible = true
+            val codec = codecField.get(venc) as? MediaCodec
+            if (codec != null) {
+                val bundle = android.os.Bundle().apply {
+                    putInt("low-latency", 1)
+                    putInt("vendor.qcom-ext-enc-low-latency.enable", 1)
+                }
+                codec.setParameters(bundle)
+                Log.i(TAG, "MediaCodec 低延迟参数注入成功")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "MediaCodec 低延迟参数注入异常: ${e.message}")
+        }
     }
 
     @Volatile
@@ -168,6 +188,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
             return false
         }
         venc.start()
+        injectLowLatencyParams()
 
         // GL 桥接：设定输出尺寸与横竖屏模式后启动。
         // 注意：GlStreamInterface 的 SurfaceTexture 在 start() 的异步任务中创建，
