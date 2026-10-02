@@ -16,8 +16,11 @@ import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.video.FormatVideoEncoder
 import com.pedro.encoder.video.GetVideoData
 import com.pedro.encoder.video.VideoEncoder
+import com.pedro.common.StreamingStatsReport
 import com.pedro.library.view.GlStreamInterface
+import com.pedro.rtspserver.server.ClientListener
 import com.pedro.rtspserver.server.RtspServer
+import com.pedro.rtspserver.server.ServerClient
 import java.nio.ByteBuffer
 
 
@@ -87,6 +90,27 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     private val gl by lazy { GlStreamInterface(ctx) }
 
     private val rtsp = RtspServer(connChk, port)
+
+    init {
+        rtsp.setClientListener(object : ClientListener {
+            override fun onClientConnected(client: ServerClient) {
+                try {
+                    client.resizeCache(2)
+                } catch (e: Exception) {
+                    Log.w(TAG, "客户端队列调整失败: ${e.message}")
+                }
+                venc.requestKeyframe()
+                Log.i(TAG, "客户端已连接，已重设缓冲队列为2并请求关键帧")
+            }
+
+            override fun onClientDisconnected(client: ServerClient) {
+                Log.i(TAG, "客户端已断开")
+            }
+
+            override fun onClientNewBitrate(bitrate: Long, client: ServerClient) {}
+            override fun onClientStreamingStats(report: StreamingStatsReport, client: ServerClient) {}
+        })
+    }
 
     @Volatile
     private var running = false
@@ -179,6 +203,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         rtsp.setOnlyVideo(true)
 
         cmgr.setCameraCallbacks(camCb)
+        cmgr.dynamicFps = false
         // 相机输出与编码器尺寸匹配，保证比例严格一致，杜绝任何画面拉伸变形
         cmgr.prepareCamera(gl.surfaceTexture, vw, vh, vfps)
         cmgr.openCameraId(id)
