@@ -47,7 +47,7 @@ class MainAct : Activity() {
         const val TAB_PST = 1
 
         val ROTS = listOf("自动", "0°", "90°", "180°", "270°")
-        val CODECS = listOf("H.265", "H.264")
+        val CODECS = listOf("H.265", "H.264", "MJPEG HTTP")
     }
 
     private var pipe: CamPipe? = null
@@ -361,10 +361,18 @@ class MainAct : Activity() {
         }
 
         val c = p.cfgnow()
-        statusTx.text = "rtsp://${getip()}:${Cfg.PORT} · ${if (p.isrun()) "推流中" else "已停止"}"
-
-        val cdcName = if (c[5] == 1) "H.264" else "H.265"
-        modeSubTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · ${c[3]}Mbps · $cdcName"
+        val cdcName = when (c[5]) {
+            2 -> "MJPEG HTTP"
+            1 -> "H.264"
+            else -> "H.265"
+        }
+        statusTx.text = if (c[5] == 2) {
+            "http://${getip()}:8080 · ${if (p.isrun()) "MJPEG推流中" else "已停止"}"
+        } else {
+            "rtsp://${getip()}:${Cfg.PORT} · ${if (p.isrun()) "推流中" else "已停止"}"
+        }
+        val rateText = if (c[5] == 2) "质量${c[3]}%" else "${c[3]}Mbps"
+        modeSubTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · $rateText · $cdcName"
 
         fitpvw(c[0], c[1])
 
@@ -547,13 +555,14 @@ class MainAct : Activity() {
         col4.addView(lbl("编码"))
         cdcSpin = Spinner(this).apply {
             adapter = mkAdapter(CODECS)
-            setSelection(c[5].coerceIn(0, 1))
+            setSelection(c[5].coerceIn(0, 2))
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
                     if (suppressEvents) return
                     if (pos != c[5]) {
                         runjob {
-                            p.reconf(p.curcam(), c[0], c[1], Cfg.FPS, c[3], c[4], pos)
+                            val newRate = if (pos == 2 && c[3] < 30) 75 else if (pos != 2 && c[3] > 50) 10 else c[3]
+                            p.reconf(p.curcam(), c[0], c[1], Cfg.FPS, newRate, c[4], pos)
                             runOnUiThread { refr() }
                         }
                     }
@@ -567,15 +576,16 @@ class MainAct : Activity() {
 
         suppressEvents = false
 
-        // ===== 紧凑网格第 3 行：[码率调节] =====
+        // ===== 紧凑网格第 3 行：[码率调节 / 质量调节] =====
+        val isMjpeg = (c[5] == 2)
         val brHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(4), 0, dp(2))
         }
-        brHeader.addView(lbl("码率"), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        brHeader.addView(lbl(if (isMjpeg) "质量" else "码率"), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         brTx = TextView(this).apply {
-            text = "${c[3]} Mbps"
+            text = if (isMjpeg) "${c[3]}%" else "${c[3]} Mbps"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             setTextColor(cAcc)
         }
@@ -583,17 +593,29 @@ class MainAct : Activity() {
         content.addView(brHeader)
 
         brSeek = SeekBar(this).apply {
-            max = 49
-            progress = (c[3] - 1).coerceIn(0, 49)
+            if (isMjpeg) {
+                max = 65
+                progress = (c[3] - 30).coerceIn(0, 65)
+            } else {
+                max = 49
+                progress = (c[3] - 1).coerceIn(0, 49)
+            }
             setPadding(dp(4), dp(6), dp(4), dp(6))
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, v: Int, fromUser: Boolean) {
                     if (fromUser) {
-                        val mbps = v + 1
-                        brTx?.text = "$mbps Mbps"
-                        p.setbrate(mbps)
-                        val cdcName = if (c[5] == 1) "H.264" else "H.265"
-                        modeSubTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · ${mbps}Mbps · $cdcName"
+                        if (isMjpeg) {
+                            val q = v + 30
+                            brTx?.text = "$q%"
+                            p.setbrate(q)
+                            modeSubTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · 质量${q}% · MJPEG HTTP"
+                        } else {
+                            val mbps = v + 1
+                            brTx?.text = "$mbps Mbps"
+                            p.setbrate(mbps)
+                            val cdcName = if (c[5] == 1) "H.264" else "H.265"
+                            modeSubTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · ${mbps}Mbps · $cdcName"
+                        }
                     }
                 }
                 override fun onStartTrackingTouch(sb: SeekBar?) {}
@@ -641,9 +663,14 @@ class MainAct : Activity() {
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
                 setTextColor(cTx)
             })
-            val cdcName = if (ps.cdc == 0) "H.265" else "H.264"
+            val cdcName = when (ps.cdc) {
+                2 -> "MJPEG HTTP"
+                1 -> "H.264"
+                else -> "H.265"
+            }
+            val rateTxt = if (ps.cdc == 2) "质量${ps.mbps}%" else "${ps.mbps}Mbps"
             card.addView(TextView(this).apply {
-                text = "CAM${ps.camId} · ${ps.w}×${ps.h} · ${ps.mbps}Mbps · $cdcName"
+                text = "CAM${ps.camId} · ${ps.w}×${ps.h} · $rateTxt · $cdcName"
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                 setTextColor(cTx3)
             })

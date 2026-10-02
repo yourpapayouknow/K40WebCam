@@ -85,6 +85,7 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
 
     private val venc = VideoEncoder(this)
     private val cmgr = Camera2ApiManager(ctx)
+    private val mjpeg = MjpegStreamer(8080)
 
     // GL 桥接：相机帧经此旋转后送入编码器
     private val gl by lazy { GlStreamInterface(ctx) }
@@ -162,20 +163,61 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     @Volatile
     private var vrot = Cfg.ROT
 
-    // 编码类型：H.265 或 H.264，可运行时切换（需重建编码器）
+    // 编码类型：H.265 或 H.264 或 MJPEG
     @Volatile
     private var vcodec = VideoCodec.H265
 
+    @Volatile
+    private var vcodecIndex = 0
+
     // 当前生效的配置快照 [w, h, fps, mbps, rot, codecIndex]
-    // codecIndex: 0=H.265, 1=H.264
+    // codecIndex: 0=H.265, 1=H.264, 2=MJPEG
     fun cfgnow(): IntArray =
-        intArrayOf(vw, vh, vfps, vbrate / 1_000_000, rotdeg(camId), if (vcodec == VideoCodec.H265) 0 else 1)
+        intArrayOf(vw, vh, vfps, vbrate / 1_000_000, rotdeg(camId), vcodecIndex)
+
+    fun isMjpeg(): Boolean = (vcodecIndex == 2)
 
     // 启动管线：编码器 → GL 桥接 → 相机；RTSP 服务待参数集就绪后自动开启
     fun strtpipe(id: String): Boolean {
         if (running) return true
         camId = id
         srvUp = false
+
+        if (vcodecIndex == 2) {
+            val q = (vbrate / 1_000_000).coerceIn(30, 95)
+            mjpeg.prepare(vw, vh, if (q > 0) q else 75)
+
+            val isPortrait = vw < vh
+            gl.setEncoderSize(vw, vh)
+            gl.setIsPortrait(isPortrait)
+            gl.start()
+            var waited = 0
+            while (!gl.isRunning && waited < 3000) {
+                try {
+                    Thread.sleep(50)
+                } catch (_: InterruptedException) {
+                }
+                waited += 50
+            }
+            if (!gl.isRunning) {
+                Log.e(TAG, "GL 初始化超时，管线未启动")
+                return false
+            }
+
+            mjpeg.surface?.let { gl.addMediaCodecSurface(it) }
+            gl.setRotation(rotdeg(id))
+
+            cmgr.setCameraCallbacks(camCb)
+            cmgr.dynamicFps = false
+            cmgr.prepareCamera(gl.surfaceTexture, vw, vh, vfps)
+            cmgr.openCameraId(id)
+
+            mjpeg.start()
+            running = true
+            srvUp = true
+            Log.i(TAG, "MJPEG 管线已启动: 相机=$id 旋转=${rotdeg(id)}° 端口=8080")
+            return true
+        }
 
         // 编码尺寸即设定分辨率：GL 会通过 SurfaceTexture 变换矩阵处理传感器朝向，
         // 残余角度由 setRotation 补足，故无需互换宽高（实测互换反而产生黑边）。
@@ -244,7 +286,9 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         cmgr.setCameraId(id)
         cmgr.openCameraId(id)
         gl.setRotation(rot)
-        venc.requestKeyframe()
+        if (vcodecIndex != 2) {
+            venc.requestKeyframe()
+        }
         Log.i(TAG, "已切换到相机 $id，旋转=$rot°")
     }
 
@@ -264,7 +308,9 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
                     cmgr.prepareCamera(gl.surfaceTexture, vw, vh, vfps)
                     cmgr.setCameraId(id)
                     cmgr.openCameraId(id)
-                    venc.requestKeyframe()
+                    if (vcodecIndex != 2) {
+                        venc.requestKeyframe()
+                    }
                     ok = true
                     break
                 } catch (e: Exception) {
@@ -279,6 +325,13 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     // 运行时调整码率（对流的有限调节之一），立即生效无需重启管线
     fun setbrate(mbps: Int) {
         if (!running) return
+        if (vcodecIndex == 2) {
+            val q = mbps.coerceIn(30, 95)
+            mjpeg.setQuality(q)
+            vbrate = q * 1_000_000
+            Log.i(TAG, "MJPEG 质量已调整为 $q")
+            return
+        }
         val bps = mbps * 1_000_000
         try {
             venc.setVideoBitrateOnFly(bps)
@@ -309,29 +362,25 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     fun detachpvw() {
         try {
             gl.deAttachPreview()
-            Log.i(TAG, "监看已解绑")
-        } catch (e: Exception) {
-            Log.w(TAG, "监看解绑失败: ${e.message}")
-        }
+        } catch (_: Exception) {}
+        Log.i(TAG, "监看已解绑")
     }
 
     // 预览是否随管线就绪（供界面决定是否已可绑定）
     fun glready(): Boolean = gl.isRunning
 
-
-    // 以新参数重建管线（分辨率变更须重建编码器与 GL，故整体重启）
-    // camId 为相机 ID，mbps 为码率，rot 为旋转角（-1 表示按传感器自动推算）
     // 以新参数重建管线（分辨率/编码类型变更须重建编码器与 GL，故整体重启）
-    // id 相机 ID；mbps 码率；rot 旋转角（-1 表示按传感器自动）；cdc 0=H.265 1=H.264
+    // id 相机 ID；mbps 码率；rot 旋转角（-1 表示按传感器自动）；cdc 0=H.265 1=H.264 2=MJPEG
     fun reconf(id: String, w: Int, h: Int, fps: Int, mbps: Int, rot: Int, cdc: Int): Boolean {
-        Log.i(TAG, "重配置: 相机=$id ${w}x$h@${fps} ${mbps}Mbps 旋转=$rot 编码=${if (cdc == 0) "H265" else "H264"}")
+        Log.i(TAG, "重配置: 相机=$id ${w}x$h@${fps} ${mbps} 旋转=$rot 编码=$cdc")
         stppipe()
         vw = w
         vh = h
         vfps = fps
         vbrate = mbps * 1_000_000
         vrot = rot
-        vcodec = if (cdc == 0) VideoCodec.H265 else VideoCodec.H264
+        vcodecIndex = cdc
+        vcodec = if (cdc == 1) VideoCodec.H264 else VideoCodec.H265
         return strtpipe(id)
     }
 
@@ -349,8 +398,12 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         // 停掉 GL 线程：其 SurfaceTexture 在下次 start() 时会重建，
         // 若不停，重启后相机会仍绑在旧的 SurfaceTexture 上
         gl.stop()
-        venc.stop()
-        rtsp.stopServer()
+        if (vcodecIndex == 2) {
+            mjpeg.stop()
+        } else {
+            venc.stop()
+            rtsp.stopServer()
+        }
         Log.i(TAG, "管线已停止")
     }
 
