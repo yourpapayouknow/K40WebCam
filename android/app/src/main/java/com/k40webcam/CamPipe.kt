@@ -36,7 +36,7 @@ import java.nio.ByteBuffer
  *
  * 注意：Kotlin 属性按声明顺序初始化，回调对象须早于依赖它们的成员声明。
  */
-class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
+class CamPipe(private val ctx: Context, private var port: Int) : GetVideoData {
 
     private companion object {
         const val TAG = "CamPipe"
@@ -90,10 +90,10 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     // GL 桥接：相机帧经此旋转后送入编码器
     private val gl by lazy { GlStreamInterface(ctx) }
 
-    private val rtsp = RtspServer(connChk, port)
+    private var rtsp = RtspServer(connChk, port).also { initRtspListener(it) }
 
-    init {
-        rtsp.setClientListener(object : ClientListener {
+    private fun initRtspListener(srv: RtspServer) {
+        srv.setClientListener(object : ClientListener {
             override fun onClientConnected(client: ServerClient) {
                 try {
                     client.resizeCache(1)
@@ -170,10 +170,12 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     @Volatile
     private var vcodecIndex = 0
 
-    // 当前生效的配置快照 [w, h, fps, mbps, rot, codecIndex]
+    fun curport(): Int = if (vcodecIndex == 2) mjpeg.getPort() else port
+
+    // 当前生效的配置快照 [w, h, fps, mbps, rot, codecIndex, port]
     // codecIndex: 0=H.265, 1=H.264, 2=MJPEG
     fun cfgnow(): IntArray =
-        intArrayOf(vw, vh, vfps, vbrate / 1_000_000, rotdeg(camId), vcodecIndex)
+        intArrayOf(vw, vh, vfps, vbrate / 1_000_000, rotdeg(camId), vcodecIndex, curport())
 
     fun isMjpeg(): Boolean = (vcodecIndex == 2)
 
@@ -370,9 +372,9 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
     fun glready(): Boolean = gl.isRunning
 
     // 以新参数重建管线（分辨率/编码类型变更须重建编码器与 GL，故整体重启）
-    // id 相机 ID；mbps 码率；rot 旋转角（-1 表示按传感器自动）；cdc 0=H.265 1=H.264 2=MJPEG
-    fun reconf(id: String, w: Int, h: Int, fps: Int, mbps: Int, rot: Int, cdc: Int): Boolean {
-        Log.i(TAG, "重配置: 相机=$id ${w}x$h@${fps} ${mbps} 旋转=$rot 编码=$cdc")
+    // id 相机 ID；mbps 码率；rot 旋转角（-1 表示按传感器自动）；cdc 0=H.265 1=H.264 2=MJPEG；targetPort 端口
+    fun reconf(id: String, w: Int, h: Int, fps: Int, mbps: Int, rot: Int, cdc: Int, targetPort: Int = curport()): Boolean {
+        Log.i(TAG, "重配置: 相机=$id ${w}x$h@${fps} ${mbps} 旋转=$rot 编码=$cdc 端口=$targetPort")
         stppipe()
         vw = w
         vh = h
@@ -381,6 +383,14 @@ class CamPipe(private val ctx: Context, private val port: Int) : GetVideoData {
         vrot = rot
         vcodecIndex = cdc
         vcodec = if (cdc == 1) VideoCodec.H264 else VideoCodec.H265
+        if (cdc == 2) {
+            mjpeg.setPort(targetPort)
+        } else {
+            if (port != targetPort) {
+                port = targetPort
+                rtsp = RtspServer(connChk, port).also { initRtspListener(it) }
+            }
+        }
         return strtpipe(id)
     }
 

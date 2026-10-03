@@ -20,7 +20,13 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-class MjpegStreamer(private val port: Int = 8080) {
+class MjpegStreamer(private var port: Int = 8080) {
+
+    fun setPort(p: Int) {
+        port = p
+    }
+
+    fun getPort(): Int = port
 
     private companion object {
         const val TAG = "MjpegStreamer"

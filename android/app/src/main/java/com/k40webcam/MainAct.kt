@@ -17,6 +17,9 @@ import android.view.WindowManager
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.text.InputFilter
+import android.text.InputType
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -54,12 +57,16 @@ class MainAct : Activity() {
     private var autoDone = false
     private var tab = TAB_PAR
 
-    // 监看视窗
+    // 监看视窗与参数叠加层
     private lateinit var monitorCard: LinearLayout
     private lateinit var monitorBox: AspectRatioFrameLayout
     private lateinit var monitorSurface: SurfaceView
-    private lateinit var modeSubTx: TextView
+    private lateinit var overlayBox: LinearLayout
+    private lateinit var overlayUrlTx: TextView
+    private lateinit var overlaySpecsTx: TextView
+    private lateinit var overlayBtn: TextView
     private lateinit var toggleBtn: TextView
+    private var isOverlayVisible = false
     private var lastAr = 0f
 
     // 状态条与内容区
@@ -207,11 +214,9 @@ class MainAct : Activity() {
             setBackgroundColor(cBg)
         }
 
-        // 1. 紧凑状态条：置顶显示地址与连接状态
+        // 1. 状态条占位
         statusTx = TextView(this).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setTextColor(cTx2)
-            setPadding(dp(12), dp(8), dp(12), dp(4))
+            visibility = View.GONE
         }
         root.addView(statusTx)
 
@@ -227,12 +232,29 @@ class MainAct : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, 0, 0, dp(6))
         }
-        modeSubTx = TextView(this).apply {
+        val headerTitle = TextView(this).apply {
+            text = "监看视窗"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setTextColor(cTx2)
+            setTextColor(cTx3)
             setPadding(dp(4), 0, 0, 0)
         }
-        monitorHeader.addView(modeSubTx, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        monitorHeader.addView(headerTitle, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        overlayBtn = TextView(this).apply {
+            text = "参数浮层"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            gravity = Gravity.CENTER
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            background = bgbox(false, cLine)
+            setTextColor(cTx2)
+            setOnClickListener {
+                isOverlayVisible = !isOverlayVisible
+                refr()
+            }
+        }
+        monitorHeader.addView(overlayBtn, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { rightMargin = dp(8) })
 
         toggleBtn = TextView(this).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
@@ -269,6 +291,41 @@ class MainAct : Activity() {
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER
             )
+        )
+
+        overlayBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                cornerRadius = dp(6).toFloat()
+                setColor(Color.argb(205, 14, 14, 14))
+                setStroke(dp(1), cLine)
+            }
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            visibility = if (isOverlayVisible) View.VISIBLE else View.GONE
+        }
+        overlayUrlTx = TextView(this).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(cAcc)
+            setTypeface(null, Typeface.BOLD)
+        }
+        overlaySpecsTx = TextView(this).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(cTx)
+            setPadding(0, dp(3), 0, 0)
+        }
+        overlayBox.addView(overlayUrlTx)
+        overlayBox.addView(overlaySpecsTx)
+
+        monitorBox.addView(
+            overlayBox,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
+            ).apply {
+                topMargin = dp(8)
+                leftMargin = dp(8)
+            }
         )
         monitorCard.addView(
             monitorBox,
@@ -401,17 +458,25 @@ class MainAct : Activity() {
             1 -> "H.264"
             else -> "H.265"
         }
-        statusTx.text = if (isRunning) {
-            if (c[5] == 2) {
-                "http://${getip()}:8080 · MJPEG推流中"
-            } else {
-                "rtsp://${getip()}:${Cfg.PORT} · 推流中"
-            }
-        } else {
-            "已暂停推流 · 点击右上角开启"
-        }
         val rateText = if (c[5] == 2) "质量${c[3]}%" else "${c[3]}Mbps"
-        modeSubTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · $rateText · $cdcName"
+        val proto = if (c[5] == 2) "http" else "rtsp"
+        val activePort = c[6]
+        val statusSuffix = if (isRunning) "推流中" else "已暂停"
+
+        if (isOverlayVisible) {
+            overlayBtn.text = "隐藏浮层"
+            overlayBtn.setTextColor(Color.WHITE)
+            overlayBtn.background = bgbox(true)
+            overlayBox.visibility = View.VISIBLE
+        } else {
+            overlayBtn.text = "参数浮层"
+            overlayBtn.setTextColor(cTx2)
+            overlayBtn.background = bgbox(false, cLine)
+            overlayBox.visibility = View.GONE
+        }
+
+        overlayUrlTx.text = "$proto://${getip()}:$activePort · $statusSuffix"
+        overlaySpecsTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · $rateText · $cdcName"
 
         fitpvw(c[0], c[1])
 
@@ -601,7 +666,9 @@ class MainAct : Activity() {
                     if (pos != c[5]) {
                         runjob {
                             val newRate = if (pos == 2 && c[3] < 30) 75 else if (pos != 2 && c[3] > 50) 10 else c[3]
-                            p.reconf(p.curcam(), c[0], c[1], Cfg.FPS, newRate, c[4], pos)
+                            val defaultPort = if (pos == 2) 8080 else Cfg.PORT
+                            val targetPort = if (c[6] == 8080 || c[6] == Cfg.PORT) defaultPort else c[6]
+                            p.reconf(p.curcam(), c[0], c[1], Cfg.FPS, newRate, c[4], pos, targetPort)
                             runOnUiThread { refr() }
                         }
                     }
@@ -647,13 +714,13 @@ class MainAct : Activity() {
                             val q = v + 30
                             brTx?.text = "$q%"
                             p.setbrate(q)
-                            modeSubTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · 质量${q}% · MJPEG HTTP"
+                            overlaySpecsTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · 质量${q}% · MJPEG HTTP"
                         } else {
                             val mbps = v + 1
                             brTx?.text = "$mbps Mbps"
                             p.setbrate(mbps)
                             val cdcName = if (c[5] == 1) "H.264" else "H.265"
-                            modeSubTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · ${mbps}Mbps · $cdcName"
+                            overlaySpecsTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · ${mbps}Mbps · $cdcName"
                         }
                     }
                 }
@@ -664,6 +731,58 @@ class MainAct : Activity() {
         content.addView(brSeek, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
+
+        // ===== 紧凑网格第 4 行：[自定义端口] =====
+        val row4 = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6), 0, dp(4))
+        }
+        row4.addView(lbl("服务端口"))
+
+        val portRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val portEdit = EditText(this).apply {
+            setText("${c[6]}")
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(cTx)
+            background = bgbox(false, cLine)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            filters = arrayOf(InputFilter.LengthFilter(5))
+        }
+        portRow.addView(portEdit, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        val applyPortBtn = TextView(this).apply {
+            text = "应用"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                cornerRadius = dp(6).toFloat()
+                setColor(cAcc)
+            }
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            setOnClickListener {
+                val input = portEdit.text.toString().toIntOrNull()
+                if (input != null && input in 1024..65535) {
+                    runjob {
+                        p.reconf(p.curcam(), c[0], c[1], Cfg.FPS, c[3], c[4], c[5], input)
+                        runOnUiThread { refr() }
+                    }
+                } else {
+                    portEdit.setText("${c[6]}")
+                }
+            }
+        }
+        portRow.addView(applyPortBtn, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { leftMargin = dp(8) })
+
+        row4.addView(portRow)
+        content.addView(row4)
     }
 
     // 预设分页
