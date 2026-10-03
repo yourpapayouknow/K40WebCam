@@ -2,9 +2,11 @@ package com.k40webcam
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
@@ -48,6 +50,7 @@ class MainAct : Activity() {
 
         const val TAB_PAR = 0
         const val TAB_PST = 1
+        const val TAB_ABT = 2
 
         val ROTS = listOf("自动", "0°", "90°", "180°", "270°")
         val CODECS = listOf("H.265", "H.264", "MJPEG HTTP")
@@ -356,7 +359,7 @@ class MainAct : Activity() {
             setPadding(dp(12), 0, dp(12), dp(4))
         }
         tabBtns = mutableListOf()
-        for ((i, name) in listOf("参数", "预设").withIndex()) {
+        for ((i, name) in listOf("参数", "预设", "关于").withIndex()) {
             val t = TextView(this).apply {
                 text = name
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
@@ -495,6 +498,7 @@ class MainAct : Activity() {
         when (tab) {
             TAB_PAR -> mkpartab(p)
             TAB_PST -> mkpsttab(p)
+            TAB_ABT -> mkabttab()
         }
     }
 
@@ -908,5 +912,92 @@ class MainAct : Activity() {
         } catch (_: Exception) {
         }
         return "0.0.0.0"
+    }
+
+    // 构建关于页面
+    private fun mkabttab() {
+        val heroBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, dp(16), 0, dp(20))
+        }
+
+        val logoBox = TextView(this).apply {
+            text = "CAM"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            setTextColor(Color.WHITE)
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat()
+                setColor(cAcc)
+            }
+        }
+        heroBox.addView(logoBox, LinearLayout.LayoutParams(dp(56), dp(56)).apply {
+            bottomMargin = dp(10)
+        })
+
+        val titleTx = TextView(this).apply {
+            text = "K40WebCam"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            setTextColor(cTx)
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER
+        }
+        heroBox.addView(titleTx)
+
+        val verTx = TextView(this).apply {
+            text = "1.0.0"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(cTx3)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(2), 0, 0)
+        }
+        heroBox.addView(verTx)
+
+        content.addView(heroBox)
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = bgbox(false, cLine)
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+        }
+
+        fun addRow(label: String, value: String, isLink: Boolean = false) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, dp(10), 0, dp(10))
+                if (isLink) {
+                    setOnClickListener {
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(value)))
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+            val lbl = TextView(this).apply {
+                text = label
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTextColor(cTx3)
+            }
+            val v = TextView(this).apply {
+                text = value
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                setTextColor(if (isLink) cAcc else cTx)
+                setPadding(0, dp(2), 0, 0)
+            }
+            row.addView(lbl)
+            row.addView(v)
+            card.addView(row)
+        }
+
+        addRow("应用名称", "K40WebCam")
+        addRow("当前版本", "1.0.0")
+        addRow("开发者", "https://github.com/yourpapayouknow", true)
+        addRow("源码主页", "https://github.com/yourpapayouknow/K40WebCam", true)
+
+        content.addView(card, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
     }
 }
