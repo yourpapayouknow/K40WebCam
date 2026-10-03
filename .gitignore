@@ -1,14 +1,33 @@
-# 参考仓库（克隆自 GitHub）不纳入版本控制，但分析文档除外
-/refrence/*
-!/refrence/refrence.md
+# macOS System Files
 .DS_Store
+.AppleDouble
+.LSOverride
 
-# 本机 Claude 启动脚本（含本机地址，不入库）
-claude_auto.command
-claude_glm.command
+# Local scripts & configuration
+*.command
+CLAUDE.md
+*.md.local
 
-# 测试截图不入库
-*.png
+# Development & Research directories
+/history/
+/experiments/
+/refrence/
+/docs/
+DESIGN.md
 
-# CodeGraph 索引目录
+# CodeGraph & IDE files
 .codegraph/
+.idea/
+*.iml
+.vscode/
+
+# Android Build & Environment Cache
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+android/*.apk
+
+# Images (exclude test captures, keep assets)
+*.png
+!assets/*.png
