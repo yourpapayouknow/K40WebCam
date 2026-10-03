@@ -59,6 +59,7 @@ class MainAct : Activity() {
     private lateinit var monitorBox: AspectRatioFrameLayout
     private lateinit var monitorSurface: SurfaceView
     private lateinit var modeSubTx: TextView
+    private lateinit var toggleBtn: TextView
     private var lastAr = 0f
 
     // 状态条与内容区
@@ -232,6 +233,26 @@ class MainAct : Activity() {
             setPadding(dp(4), 0, 0, 0)
         }
         monitorHeader.addView(modeSubTx, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        toggleBtn = TextView(this).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            setOnClickListener {
+                pipe?.let { p ->
+                    runjob {
+                        if (p.isrun()) {
+                            p.stppipe()
+                        } else {
+                            p.strtpipe(p.curcam())
+                        }
+                    }
+                }
+            }
+        }
+        monitorHeader.addView(toggleBtn, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
         monitorCard.addView(monitorHeader, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
@@ -360,23 +381,41 @@ class MainAct : Activity() {
             }
         }
 
+        val isRunning = p.isrun()
+        if (isRunning) {
+            toggleBtn.text = "关闭推流"
+            toggleBtn.setTextColor(cTx)
+            toggleBtn.background = bgbox(false, cLine)
+        } else {
+            toggleBtn.text = "开启推流"
+            toggleBtn.setTextColor(Color.WHITE)
+            toggleBtn.background = GradientDrawable().apply {
+                cornerRadius = dp(6).toFloat()
+                setColor(cAcc)
+            }
+        }
+
         val c = p.cfgnow()
         val cdcName = when (c[5]) {
             2 -> "MJPEG HTTP"
             1 -> "H.264"
             else -> "H.265"
         }
-        statusTx.text = if (c[5] == 2) {
-            "http://${getip()}:8080 · ${if (p.isrun()) "MJPEG推流中" else "已停止"}"
+        statusTx.text = if (isRunning) {
+            if (c[5] == 2) {
+                "http://${getip()}:8080 · MJPEG推流中"
+            } else {
+                "rtsp://${getip()}:${Cfg.PORT} · 推流中"
+            }
         } else {
-            "rtsp://${getip()}:${Cfg.PORT} · ${if (p.isrun()) "推流中" else "已停止"}"
+            "已暂停推流 · 点击右上角开启"
         }
         val rateText = if (c[5] == 2) "质量${c[3]}%" else "${c[3]}Mbps"
         modeSubTx.text = "CAM${p.curcam()} · ${c[0]}×${c[1]} · $rateText · $cdcName"
 
         fitpvw(c[0], c[1])
 
-        if (p.isrun() && p.glready()) {
+        if (isRunning && p.glready()) {
             try {
                 p.attachpvw(monitorSurface.holder.surface, monitorSurface.width, monitorSurface.height)
             } catch (_: Exception) {}
